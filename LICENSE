@@ -1,6 +1,10 @@
 MIT License
 
+<<<<<<< HEAD
 Copyright (c) 2026 Snoyi Selew
+=======
+Copyright (c) 2026 Qiaojia Ge
+>>>>>>> 62759f3 ('初始功能完成，支持保存，读取导出，进行mnist的基础测试，具体循环封装未完整测试')
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
