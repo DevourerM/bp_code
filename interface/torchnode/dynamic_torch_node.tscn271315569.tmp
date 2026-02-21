@@ -1,0 +1,11 @@
+[gd_scene format=3 uid="uid://iityi0gdbai7"]
+
+[ext_resource type="Script" uid="uid://cqy2ikkiaegsf" path="res://torchnode/dynamic_torch_node.gd" id="1_3s0ln"]
+
+[node name="DynamicTorchNode" type="GraphNode" unique_id=219699680]
+clip_contents = true
+custom_minimum_size = Vector2(150, 0)
+offset_right = 150.0
+offset_bottom = 55.0
+title = "Func"
+script = ExtResource("1_3s0ln")

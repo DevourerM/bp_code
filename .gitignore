@@ -1,0 +1,33 @@
+# ==================== 基础通用规则 ====================
+# Git自身文件（如果不需要提交.gitattributes/.gitignore可取消注释）
+# .gitattributes
+# .gitignore
+
+# ==================== Godot 4+ 专属规则 ====================
+# Godot项目目录
+interface/.godot/
+/android/
+
+# Godot临时/缓存文件
+*.uid                # 过滤所有.uid文件
+*.tmp                # 过滤所有.tmp临时文件
+*.import             # 过滤所有.import文件（如果需要保留可注释）
+interface/icon.svg   # 过滤指定的svg文件
+
+# ==================== Python 专属规则 ====================
+# 目录路径修正（你的原配置写的backpython是错的）
+backend_python/.venv/
+backend_python/.vscode/
+backend_python/__pycache__/
+# 过滤Python编译缓存文件（兜底，防止漏过滤）
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+
+# ==================== 可选过滤规则（根据需求选择） ====================
+# 编辑器配置文件（如果不需要提交.editorconfig可取消注释）
+interface/.editorconfig
+# Godot资源文件（如果不需要提交可添加）
+# interface/resource/
+# interface/mnist.bpnn

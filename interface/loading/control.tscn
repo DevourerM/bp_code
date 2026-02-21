@@ -1,0 +1,47 @@
+[gd_scene format=3 uid="uid://dek7rqrydffry"]
+
+[ext_resource type="Script" uid="uid://d1fbrgxqyju16" path="res://loading/load.gd" id="1_jptfa"]
+[ext_resource type="LabelSettings" uid="uid://s6f7os4r0rjc" path="res://loading/label_setting.tres" id="2_vjmxb"]
+[ext_resource type="Script" uid="uid://4ljmu4of83y1" path="res://loading/progress_ring.gd" id="3_je35a"]
+
+[node name="Loading" type="Control" unique_id=644532997]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_jptfa")
+
+[node name="Label" type="Label" parent="." unique_id=655096100]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -20.0
+offset_top = 126.0
+offset_right = 20.0
+offset_bottom = 149.0
+grow_horizontal = 2
+grow_vertical = 2
+text = "Waiting"
+label_settings = ExtResource("2_vjmxb")
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="ProgressRing" type="Control" parent="." unique_id=1510553167]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -20.0
+offset_top = -20.0
+offset_right = 20.0
+offset_bottom = 20.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("3_je35a")

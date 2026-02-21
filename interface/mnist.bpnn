@@ -1,0 +1,277 @@
+{
+	"main": {
+		"connections": [
+			{
+				"from": "Data Input",
+				"from_port": 0,
+				"to": "DynamicTorchNode",
+				"to_port": 0
+			},
+			{
+				"from": "DynamicTorchNode",
+				"from_port": 0,
+				"to": "@GraphNode@555",
+				"to_port": 0
+			},
+			{
+				"from": "@GraphNode@555",
+				"from_port": 0,
+				"to": "@GraphNode@588",
+				"to_port": 0
+			},
+			{
+				"from": "@GraphNode@588",
+				"from_port": 0,
+				"to": "@GraphNode@637",
+				"to_port": 0
+			},
+			{
+				"from": "@GraphNode@637",
+				"from_port": 0,
+				"to": "@GraphNode@673",
+				"to_port": 0
+			},
+			{
+				"from": "@GraphNode@673",
+				"from_port": 0,
+				"to": "@GraphNode@710",
+				"to_port": 0
+			},
+			{
+				"from": "@GraphNode@710",
+				"from_port": 0,
+				"to": "Data Output",
+				"to_port": 0
+			}
+		],
+		"nodes": {
+			"@GraphNode@555": {
+				"inputs": [
+					"in"
+				],
+				"params": {
+					"ceil_mode": {
+						"type": "bool",
+						"value": "False"
+					},
+					"dilation": {
+						"type": "int",
+						"value": "1.0"
+					},
+					"kernel_size": {
+						"type": "string",
+						"value": "2"
+					},
+					"padding": {
+						"type": "int",
+						"value": "0.0"
+					},
+					"return_indices": {
+						"type": "bool",
+						"value": "False"
+					},
+					"stride": {
+						"type": "string",
+						"value": "None"
+					}
+				},
+				"pos_x": 640.0,
+				"pos_y": 160.0,
+				"type": "MaxPool2d"
+			},
+			"@GraphNode@588": {
+				"inputs": [
+					"in"
+				],
+				"params": {
+					"bias": {
+						"type": "bool",
+						"value": "True"
+					},
+					"dilation": {
+						"type": "int",
+						"value": "1.0"
+					},
+					"groups": {
+						"type": "int",
+						"value": "1.0"
+					},
+					"in_channels": {
+						"type": "string",
+						"value": "5"
+					},
+					"kernel_size": {
+						"type": "string",
+						"value": "5"
+					},
+					"out_channels": {
+						"type": "string",
+						"value": "64"
+					},
+					"padding": {
+						"type": "int",
+						"value": "0.0"
+					},
+					"padding_mode": {
+						"type": "string",
+						"value": "zeros"
+					},
+					"stride": {
+						"type": "int",
+						"value": "1.0"
+					}
+				},
+				"pos_x": 960.0,
+				"pos_y": 520.0,
+				"type": "Conv2d"
+			},
+			"@GraphNode@637": {
+				"inputs": [
+					"in"
+				],
+				"params": {
+					"ceil_mode": {
+						"type": "bool",
+						"value": "False"
+					},
+					"dilation": {
+						"type": "int",
+						"value": "1.0"
+					},
+					"kernel_size": {
+						"type": "string",
+						"value": "2"
+					},
+					"padding": {
+						"type": "int",
+						"value": "0.0"
+					},
+					"return_indices": {
+						"type": "bool",
+						"value": "False"
+					},
+					"stride": {
+						"type": "string",
+						"value": "None"
+					}
+				},
+				"pos_x": 1280.0,
+				"pos_y": 220.0,
+				"type": "MaxPool2d"
+			},
+			"@GraphNode@673": {
+				"inputs": [
+					"in"
+				],
+				"params": {
+					"end_dim": {
+						"type": "int",
+						"value": "3.0"
+					},
+					"start_dim": {
+						"type": "int",
+						"value": "1.0"
+					}
+				},
+				"pos_x": 1660.0,
+				"pos_y": 480.0,
+				"type": "Flatten"
+			},
+			"@GraphNode@710": {
+				"inputs": [
+					"in"
+				],
+				"params": {
+					"bias": {
+						"type": "bool",
+						"value": "True"
+					},
+					"in_features": {
+						"type": "string",
+						"value": "1024"
+					},
+					"out_features": {
+						"type": "string",
+						"value": "10"
+					}
+				},
+				"pos_x": 2060.0,
+				"pos_y": 380.0,
+				"type": "Linear"
+			},
+			"Data Input": {
+				"inputs": [],
+				"params": {
+					"mode": {
+						"type": "enum",
+						"value": "randn"
+					},
+					"shape": {
+						"type": "tuple",
+						"value": "(1, 1, 28, 28)"
+					}
+				},
+				"pos_x": 0.0,
+				"pos_y": 180.0,
+				"type": "Data Input"
+			},
+			"Data Output": {
+				"inputs": [
+					"tensor"
+				],
+				"params": {
+
+				},
+				"pos_x": 2460.0,
+				"pos_y": 500.0,
+				"type": "Data Output"
+			},
+			"DynamicTorchNode": {
+				"inputs": [
+					"in"
+				],
+				"params": {
+					"bias": {
+						"type": "bool",
+						"value": "True"
+					},
+					"dilation": {
+						"type": "int",
+						"value": "1.0"
+					},
+					"groups": {
+						"type": "int",
+						"value": "1.0"
+					},
+					"in_channels": {
+						"type": "string",
+						"value": "1"
+					},
+					"kernel_size": {
+						"type": "string",
+						"value": "5"
+					},
+					"out_channels": {
+						"type": "string",
+						"value": "5"
+					},
+					"padding": {
+						"type": "int",
+						"value": "0.0"
+					},
+					"padding_mode": {
+						"type": "string",
+						"value": "zeros"
+					},
+					"stride": {
+						"type": "int",
+						"value": "1.0"
+					}
+				},
+				"pos_x": 280.0,
+				"pos_y": 520.0,
+				"type": "Conv2d"
+			}
+		}
+	}
+}
