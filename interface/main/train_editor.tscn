@@ -1,0 +1,28 @@
+[gd_scene format=3 uid="uid://f3jul7vjmq3o"]
+
+[ext_resource type="Script" uid="uid://cjvu8mhvrnamb" path="res://main/train_editor.gd" id="1_2l1r1"]
+
+[node name="train_editor" type="Control" unique_id=1213087647]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_2l1r1")
+
+[node name="GraphEdit" type="GraphEdit" parent="." unique_id=167467146]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+minimap_enabled = false
+show_menu = false
+show_zoom_label = true
+
+[node name="NodeMenu" type="PopupMenu" parent="." unique_id=2029692182]
+oversampling_override = 1.0
+
+[node name="ActionMenu" type="PopupMenu" parent="." unique_id=430318349]

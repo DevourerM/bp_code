@@ -13,7 +13,10 @@ func _ready():
 	if progress_ring: progress_ring.progress = 0.1
 	
 	GlobalData.socket.close()
-	var err = GlobalData.socket.connect_to_url("ws://localhost:8765")
+
+	GlobalData.socket.inbound_buffer_size = 8388608
+	GlobalData.socket.outbound_buffer_size = 8388608
+	var err = GlobalData.socket.connect_to_url("ws://127.0.0.1:8765")
 	is_loading = (err == OK)
 
 func _process(delta):
@@ -60,4 +63,4 @@ func _parse_with_animation(lib_data):
 	
 	label.text = "加载完成！"
 	await get_tree().create_timer(0.5).timeout
-	get_tree().change_scene_to_file("res://main/main.tscn")
+	get_tree().change_scene_to_file("res://main/app.tscn")

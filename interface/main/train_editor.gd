@@ -3,15 +3,9 @@ extends Control
 @onready var graph_edit = $GraphEdit
 @onready var action_menu = $ActionMenu 
 
-# ==========================================
-# 【新增】：绑定你在编辑器里创建的 UI 节点
-# ==========================================
-@onready var save_dialog: FileDialog = $UI/SaveDialog
-@onready var load_dialog: FileDialog = $UI/LoadDialog
-@onready var export_dialog: FileDialog = $UI/ExportDialog
-@onready var export_window: Window = $UI/ExportWindow
-@onready var export_class_input: LineEdit = $UI/ExportWindow/VBoxContainer/ClassInput
-@onready var message_dialog: AcceptDialog = $UI/MessageDialog
+# 【修复】：去掉 @onready，改为普通变量，防止找不到节点报错
+var breadcrumb_bar: PanelContainer
+var breadcrumb_container: HBoxContainer
 
 const DynamicNodeScene = preload("res://torchnode/dynamic_torch_node.tscn") 
 
@@ -20,10 +14,9 @@ var clipboard_config: Dictionary = {}
 var search_popup: PopupPanel; var search_box: LineEdit; var node_tree: Tree
 var shape_labels: Dictionary = {}
 
-var breadcrumb_bar: PanelContainer
-var breadcrumb_container: HBoxContainer
-
 func _ready():
+	set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	
 	_setup_breadcrumbs_ui()
 	_setup_search_menu()
 	_build_action_menu()
@@ -38,27 +31,11 @@ func _ready():
 	graph_edit.connection_request.connect(_on_connection_request)
 	graph_edit.disconnection_request.connect(_on_disconnection_request)
 	
-	GlobalData.library_updated.connect(_on_library_ready)
+	GlobalData.library_updated.connect(func(): load_graph_state("main"))
 	if not GlobalData.node_library.is_empty():
-		_on_library_ready()
+		load_graph_state(GlobalData.get_current_graph_id())
 
 func _process(_delta):
-	GlobalData.socket.poll()
-	if GlobalData.socket.get_ready_state() == WebSocketPeer.STATE_OPEN:
-		while GlobalData.socket.get_available_packet_count() > 0:
-			var packet = GlobalData.socket.get_packet()
-			var json = JSON.parse_string(packet.get_string_from_utf8())
-			
-			if typeof(json) == TYPE_DICTIONARY:
-				if json.has("type") and json["type"] == "SHAPE_RESULTS":
-					var payload = json["data"]
-					_update_shape_labels(payload.get("shapes", {}))
-					_update_auto_params(payload.get("updated_params", {}))
-				elif json.has("type") and json["type"] == "EXPORT_SUCCESS":
-					_show_message("✅ 导出成功！", json["msg"])
-				elif json.has("type") and json["type"] == "EXPORT_ERROR":
-					_show_message("❌ 导出失败！", json["msg"])
-				
 	for conn in graph_edit.get_connection_list():
 		var conn_key = str(conn["from_node"]) + "->" + str(conn["to_node"])
 		if shape_labels.has(conn_key):
@@ -73,110 +50,92 @@ func _process(_delta):
 				lbl.position = mid_local - (lbl.size / 2.0)
 
 # ==========================================
-# 【 UI 信号接收函数 】：请在编辑器中将对应节点的信号连接到这里
+# 【训练界面专属超能力】：将导入的 .bpnn 整个化身为一个 Group 节点
 # ==========================================
-
-# 1. 按钮按下信号
-func _on_save_btn_pressed():
-	_save_current_graph_state()
-	save_dialog.popup_centered_ratio(0.6)
-
-func _on_load_btn_pressed():
-	load_dialog.popup_centered_ratio(0.6)
-
-func _on_export_btn_pressed():
-	_save_current_graph_state()
-	export_window.popup_centered()
-
-func _on_confirm_export_btn_pressed():
-	export_window.hide()
-	export_dialog.popup_centered_ratio(0.6)
-
-# 2. 对话框文件选择信号
-func _on_save_dialog_file_selected(path: String):
-	# 将相对路径转为系统绝对路径
-	var real_path = ProjectSettings.globalize_path(path)
+func import_model_as_group(model_data: Dictionary, model_name: String):
+	var main_graph = model_data.get("main", {})
+	var nodes = main_graph.get("nodes", {})
+	var connections = main_graph.get("connections", [])
 	
-	# 【修复】：自动检测并补全 .bpnn 后缀
-	if not real_path.ends_with(".bpnn"):
-		real_path += ".bpnn"
-		
-	var file = FileAccess.open(real_path, FileAccess.WRITE)
-	if file:
-		file.store_string(JSON.stringify(GlobalData.project_graphs, "\t"))
-		_show_message("✅ 保存成功！", "项目已保存到：\n" + real_path)
-	else:
-		_show_message("❌ 保存失败！", "无法写入文件，请检查路径权限。")
-
-func _on_load_dialog_file_selected(path: String):
-	var file = FileAccess.open(path, FileAccess.READ)
-	var json = JSON.parse_string(file.get_as_text())
-	if typeof(json) == TYPE_DICTIONARY:
-		GlobalData.project_graphs = json
-		GlobalData.current_path = ["main"]
-		_load_graph_state("main")
-		_show_message("✅ 读取成功！", "成功加载项目：\n" + path)
-	else:
-		_show_message("❌ 读取失败！", "文件格式损坏或不正确。")
-
-func _on_export_dialog_file_selected(path: String):
-	# 1. 将 Godot 的内部虚拟路径 (res://...) 转换为真实的电脑绝对路径 (C:/...)
-	var real_path = ProjectSettings.globalize_path(path)
+	# 【核心修复 1】：做无缝转接手术！将模型主层的 Data Input/Output 重命名为 input0/output0
+	if nodes.has("Data Input"):
+		nodes["input0"] = nodes["Data Input"].duplicate()
+		nodes.erase("Data Input")
+		for conn in connections:
+			if conn["from"] == "Data Input": conn["from"] = "input0"
+			if conn["to"] == "Data Input": conn["to"] = "input0"
+			
+	if nodes.has("Data Output"):
+		nodes["output0"] = nodes["Data Output"].duplicate()
+		nodes.erase("Data Output")
+		for conn in connections:
+			if conn["from"] == "Data Output": conn["from"] = "output0"
+			if conn["to"] == "Data Output": conn["to"] = "output0"
 	
-	# 2. 自动补全后缀，防止用户保存时忘记输入 .py
-	if not real_path.ends_with(".py"):
-		real_path += ".py"
+	var expected_input_count = 0
+	for nid in nodes:
+		if nodes[nid].get("type") == "Data Input":
+			expected_input_count += 1
+			
+	if expected_input_count == 0: expected_input_count = 1
+	
+	# 【核心修复 2】：取消破坏内部引用的前缀，直接进行隔离导入
+	for graph_id in model_data.keys():
+		if graph_id == "main":
+			GlobalData.project_graphs[model_name] = model_data[graph_id]
+		else:
+			GlobalData.project_graphs[graph_id] = model_data[graph_id]
+			
+	var sys_cat = "Structure (架构)"
+	if GlobalData.node_library.has(sys_cat) and GlobalData.node_library[sys_cat].has("Group"):
+		var group_config = GlobalData.node_library[sys_cat]["Group"].duplicate(true)
+		for p in group_config.params:
+			if p.name == "input_count": p["value"] = expected_input_count
+				
+		var spawn_pos = (graph_edit.scroll_offset + Vector2(300, 200)) / graph_edit.zoom
+		var group_node = create_node_from_config(group_config, spawn_pos)
 		
-	var req = {
-		"path": real_path,
-		"class_name": export_class_input.text,
-		"data": GlobalData.project_graphs
-	}
-	GlobalData.socket.send_text("EXPORT_PY:" + JSON.stringify(req))
-
-# 3. 提示窗辅助函数
-func _show_message(title_text: String, msg: String):
-	message_dialog.title = title_text
-	message_dialog.dialog_text = msg
-	message_dialog.popup_centered()
-
+		group_node.name = model_name
+		group_node.title = "🧠 [模型] " + model_name
+		
+		_request_shape_inference()
 # ==========================================
-# 面包屑、图状态与空间穿梭 (保持原样)
+# 开放给 App 调用的公开接口 (API)
 # ==========================================
-func _on_library_ready():
-	_load_graph_state("main")
+func apply_shape_results(payload: Dictionary):
+	var shape_data = payload.get("shapes", {})
+	for conn_key in shape_data.keys():
+		if shape_labels.has(conn_key):
+			var lbl = shape_labels[conn_key] as Label
+			var result = str(shape_data[conn_key])
+			if result.length() > 60: result = result.substr(0, 57) + "..."
+			if "Error" in result or "冲突" in result or "错误" in result:
+				lbl.text = "✖ " + result; lbl.label_settings.font_color = Color(1, 0.3, 0.3)
+			else:
+				lbl.text = " " + result + " "; lbl.label_settings.font_color = Color(0.4, 1.0, 0.6)
+				
+	var updated_params = payload.get("updated_params", {})
+	for child in graph_edit.get_children():
+		if child is GraphNode and child.has_method("reset_auto_params"): child.reset_auto_params()
+	for node_name in updated_params.keys():
+		var node = graph_edit.get_node_or_null(NodePath(node_name))
+		if node and node is GraphNode and node.has_method("apply_auto_params"):
+			node.apply_auto_params(updated_params[node_name])
 
-func _save_current_graph_state():
+func save_current_graph_state():
 	var current_id = GlobalData.get_current_graph_id()
 	var data = {"nodes": {}, "connections": []}
 	for child in graph_edit.get_children():
 		if child is GraphNode and child.has_method("get_current_params"):
 			data["nodes"][child.name] = {
-				"type": child.config.name,
-				"params": child.get_current_params(),
-				"inputs": child.config.get("inputs", []),
-				"pos_x": child.position_offset.x,
-				"pos_y": child.position_offset.y
+				"type": child.config.name, "params": child.get_current_params(),
+				"inputs": child.config.get("inputs", []), "pos_x": child.position_offset.x, "pos_y": child.position_offset.y
 			}
 	for conn in graph_edit.get_connection_list():
-		data["connections"].append({
-			"from": conn["from_node"], "from_port": conn["from_port"],
-			"to": conn["to_node"], "to_port": conn["to_port"]
-		})
+		data["connections"].append({"from": conn["from_node"], "from_port": conn["from_port"], "to": conn["to_node"], "to_port": conn["to_port"]})
 	GlobalData.project_graphs[current_id] = data
 
-func _on_enter_subgraph_requested(node_name: String):
-	var node = graph_edit.get_node_or_null(NodePath(node_name))
-	var expected_count = 1
-	if node:
-		var params = node.get_current_params()
-		if params.has("input_count"): expected_count = int(float(params["input_count"]["value"]))
-		
-	_save_current_graph_state()
-	GlobalData.current_path.append(node_name)
-	_load_graph_state(node_name, expected_count)
-
-func _load_graph_state(graph_id: String, expected_input_count: int = 1):
+func load_graph_state(graph_id: String, expected_input_count: int = 1):
 	graph_edit.clear_connections()
 	for child in graph_edit.get_children():
 		if child is GraphNode or child is Label: child.queue_free()
@@ -188,11 +147,44 @@ func _load_graph_state(graph_id: String, expected_input_count: int = 1):
 	
 	if data.get("nodes", {}).is_empty():
 		if graph_id == "main":
-			var in_n = create_node(sys_cat, "Data Input", Vector2(100, 200))
-			in_n.name = "Data Input"; in_n.title = "Data Input"
-			var out_n = create_node(sys_cat, "Data Output", Vector2(800, 200))
-			out_n.name = "Data Output"; out_n.title = "Data Output"
-			_on_connection_request(in_n.name, 0, out_n.name, 0)
+			# ==========================================
+			# 【终极工作流】：自动生成带数据分流的训练模板
+			# ==========================================
+			var train_cat = "Training (训练配置)"
+			var sys_cat_ref = "System (系统节点)"
+			
+			if GlobalData.node_library.has(train_cat):
+				# 1. 实例化节点
+				var n_data = create_node(train_cat, "Dataset Loader", Vector2(50, 100))
+				n_data.name = "Dataset_Loader"
+				
+				var n_cfg = create_node(train_cat, "Training Config", Vector2(350, 100))
+				n_cfg.name = "Training_Config"
+				
+				var n_target = create_node(train_cat, "Target Loader", Vector2(50, 350))
+				n_target.name = "Target_Loader"
+				
+				var n_loss = create_node("Losses (损失函数)", "CrossEntropyLoss", Vector2(1000, 250))
+				n_loss.name = "CrossEntropyLoss"
+				
+				var n_opt = create_node("Optimizers (优化器)", "Adam", Vector2(1350, 250))
+				n_opt.name = "Adam"
+				
+				# 实例化注释节点，代替原来的黄字
+				var n_comment = create_node(sys_cat_ref, "Comment (注释)", Vector2(650, 80))
+				n_comment.name = "Workflow_Comment"
+				if n_comment.config.has("params"):
+					n_comment.config.params[0]["value"] = "【工作流说明】\n1. 请在上方点击 📦导入模型\n2. 将模型置于此处\n3. 连线: Config -> 模型 -> Loss (preds)"
+				
+				await get_tree().process_frame
+				
+				# 2. 自动连接节点，形成严密的逻辑闭环！
+				_on_connection_request(n_data.name, 0, n_cfg.name, 0)      # Data -> Config
+				_on_connection_request(n_target.name, 0, n_loss.name, 1)   # Target -> Loss (targets 端)
+				_on_connection_request(n_loss.name, 0, n_opt.name, 0)      # Loss -> Optimizer
+				
+				_request_shape_inference()
+				
 		else:
 			for i in range(expected_input_count):
 				var in_name = "input" + str(i)
@@ -209,7 +201,6 @@ func _load_graph_state(graph_id: String, expected_input_count: int = 1):
 				if n_data.has("params") and conf.has("params"):
 					for p in conf.params:
 						if n_data["params"].has(p.name): p["value"] = n_data["params"][p.name]["value"]
-				
 				var n = create_node_from_config(conf, Vector2(n_data.get("pos_x", 0), n_data.get("pos_y", 0)))
 				n.name = node_name
 				if node_name.begins_with("input") or node_name.begins_with("output"): n.title = node_name
@@ -233,72 +224,41 @@ func _load_graph_state(graph_id: String, expected_input_count: int = 1):
 	_refresh_breadcrumbs()
 	_request_shape_inference()
 
-func _go_to_breadcrumb_level(level_index: int):
-	if level_index == GlobalData.current_path.size() - 1: return
-	_save_current_graph_state()
-	GlobalData.current_path = GlobalData.current_path.slice(0, level_index + 1)
-	_load_graph_state(GlobalData.get_current_graph_id())
-
-func _find_category_by_type(node_type: String) -> String:
-	for cat in GlobalData.node_library.keys():
-		if GlobalData.node_library[cat].has(node_type): return cat
-	return ""
-
-func _setup_breadcrumbs_ui():
-	breadcrumb_bar = PanelContainer.new()
-	var style = StyleBoxFlat.new()
-	style.bg_color = Color(0.1, 0.1, 0.1, 0.8)
-	breadcrumb_bar.add_theme_stylebox_override("panel", style)
-	breadcrumb_container = HBoxContainer.new()
-	breadcrumb_bar.add_child(breadcrumb_container)
-	add_child(breadcrumb_bar)
-	breadcrumb_bar.set_anchors_and_offsets_preset(PRESET_TOP_WIDE)
-	breadcrumb_bar.custom_minimum_size.y = 40
-
-func _refresh_breadcrumbs():
-	for c in breadcrumb_container.get_children(): c.queue_free()
-	var path = GlobalData.current_path
-	for i in range(path.size()):
-		var btn = Button.new()
-		btn.text = path[i]
-		btn.add_theme_font_size_override("font_size", 16)
-		btn.pressed.connect(func(): _go_to_breadcrumb_level(i))
-		breadcrumb_container.add_child(btn)
-		if i < path.size() - 1:
-			var sep = Label.new(); sep.text = "  >>  "
-			breadcrumb_container.add_child(sep)
-
 # ==========================================
-# 连线推导与右键逻辑 (保持原样)
+# 以下均为内部逻辑 (连线推导/面包屑/搜索树)
 # ==========================================
 func _request_shape_inference():
-	_save_current_graph_state()
+	save_current_graph_state()
 	if GlobalData.socket.get_ready_state() == WebSocketPeer.STATE_OPEN:
 		GlobalData.socket.send_text("INFER_SHAPES:" + JSON.stringify(GlobalData.project_graphs))
 
-func _update_shape_labels(shape_data: Dictionary):
-	for conn_key in shape_data.keys():
-		if shape_labels.has(conn_key):
-			var lbl = shape_labels[conn_key] as Label
-			var result = str(shape_data[conn_key])
-			if result.length() > 60: result = result.substr(0, 57) + "..."
-			if "Error" in result or "冲突" in result or "错误" in result:
-				lbl.text = "✖ " + result; lbl.label_settings.font_color = Color(1, 0.3, 0.3)
-			else:
-				lbl.text = " " + result + " "; lbl.label_settings.font_color = Color(0.4, 1.0, 0.6)
+func _on_enter_subgraph_requested(node_name: String):
+	var node = graph_edit.get_node_or_null(NodePath(node_name))
+	var expected_count = 1
+	if node:
+		var params = node.get_current_params()
+		if params.has("input_count"): expected_count = int(float(params["input_count"]["value"]))
+		
+	save_current_graph_state()
+	GlobalData.current_path.append(node_name)
+	load_graph_state(node_name, expected_count)
 
-func _update_auto_params(updated_params: Dictionary):
-	for child in graph_edit.get_children():
-		if child is GraphNode and child.has_method("reset_auto_params"): child.reset_auto_params()
-	for node_name in updated_params.keys():
-		var node = graph_edit.get_node_or_null(NodePath(node_name))
-		if node and node is GraphNode and node.has_method("apply_auto_params"):
-			node.apply_auto_params(updated_params[node_name])
+func _go_to_breadcrumb_level(level_index: int):
+	if level_index == GlobalData.current_path.size() - 1: return
+	save_current_graph_state()
+	GlobalData.current_path = GlobalData.current_path.slice(0, level_index + 1)
+	load_graph_state(GlobalData.get_current_graph_id())
 
 func _on_connection_request(from_node: StringName, from_port: int, to_node: StringName, to_port: int):
 	for conn in graph_edit.get_connection_list():
-		if conn["from_node"] == from_node and conn["from_port"] == from_port and conn["to_node"] == to_node and conn["to_port"] == to_port:
-			return 
+		if conn["from_node"] == from_node and conn["from_port"] == from_port and conn["to_node"] == to_node and conn["to_port"] == to_port: return 
+	for conn in graph_edit.get_connection_list():
+		if conn["to_node"] == to_node and conn["to_port"] == to_port:
+			graph_edit.disconnect_node(conn["from_node"], conn["from_port"], conn["to_node"], conn["to_port"])
+			var old_key = str(conn["from_node"]) + "->" + str(conn["to_node"])
+			if shape_labels.has(old_key): shape_labels[old_key].queue_free(); shape_labels.erase(old_key)
+			break 
+			
 	graph_edit.connect_node(from_node, from_port, to_node, to_port)
 	var conn_key = str(from_node) + "->" + str(to_node)
 	if not shape_labels.has(conn_key):
@@ -322,6 +282,11 @@ func _on_disconnection_request(from_node: StringName, from_port: int, to_node: S
 		shape_labels.erase(conn_key)
 	_request_shape_inference()
 
+func _find_category_by_type(node_type: String) -> String:
+	for cat in GlobalData.node_library.keys():
+		if GlobalData.node_library[cat].has(node_type): return cat
+	return ""
+
 func _create_node(config: Dictionary, pos: Vector2) -> GraphNode:
 	return create_node_from_config(config.duplicate(true), pos)
 
@@ -338,6 +303,33 @@ func create_node_from_config(config: Dictionary, pos: Vector2) -> GraphNode:
 	if new_node.has_signal("enter_subgraph_requested"):
 		new_node.enter_subgraph_requested.connect(_on_enter_subgraph_requested)
 	return new_node
+
+func _setup_breadcrumbs_ui():
+	if not breadcrumb_bar:
+		breadcrumb_bar = PanelContainer.new()
+		var style = StyleBoxFlat.new(); style.bg_color = Color(0.1, 0.1, 0.1, 0.8)
+		breadcrumb_bar.add_theme_stylebox_override("panel", style)
+		breadcrumb_container = HBoxContainer.new()
+		breadcrumb_bar.add_child(breadcrumb_container)
+		add_child(breadcrumb_bar)
+		breadcrumb_bar.set_anchors_and_offsets_preset(PRESET_TOP_WIDE)
+		breadcrumb_bar.custom_minimum_size.y = 40
+	elif breadcrumb_bar.get_child_count() > 0:
+		breadcrumb_container = breadcrumb_bar.get_child(0)
+
+func _refresh_breadcrumbs():
+	for c in breadcrumb_container.get_children(): c.queue_free()
+	var path = GlobalData.current_path
+	for i in range(path.size()):
+		var btn = Button.new()
+		# 【修复】：将未知变量强转为 string，并映射 main -> Train
+		btn.text = "Train" if str(path[i]) == "main" else str(path[i])
+		btn.add_theme_font_size_override("font_size", 16)
+		btn.pressed.connect(func(): _go_to_breadcrumb_level(i))
+		breadcrumb_container.add_child(btn)
+		if i < path.size() - 1:
+			var sep = Label.new(); sep.text = "  >>  "
+			breadcrumb_container.add_child(sep)
 
 func _setup_search_menu():
 	search_popup = PopupPanel.new()

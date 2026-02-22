@@ -190,3 +190,233 @@ def generate_pytorch_code(project_data, main_class_name="MyNetwork"):
         code_blocks.append("\n")
         
     return "\n".join(code_blocks)
+
+
+# 将这段代码追加到 compiler.py 文件的最下方
+
+# ==========================================
+# 训练专用 PyTorch 代码编译器
+# ==========================================
+# ==========================================
+# 训练专用 PyTorch 代码编译器
+# ==========================================
+def generate_train_code(project_data, main_class_name="MyNetwork"):
+    train_graph = project_data.get("main", {})
+    nodes = train_graph.get("nodes", {})
+
+    # 1. 扫描训练画布，寻找关键组件
+    model_node_name = None
+    loss_node = None
+    optim_node = None
+    dataset_node = None
+    target_node = None
+    config_node = None
+
+    for nid, info in nodes.items():
+        l_type = info.get("type", "")
+        if l_type == "Group": model_node_name = info.get("name", nid) 
+        elif "Loss" in l_type: loss_node = info
+        elif l_type in ["Adadelta", "Adagrad", "Adam", "AdamW", "SGD", "RMSprop"]: optim_node = info
+        elif l_type == "Dataset Loader": dataset_node = info
+        elif l_type == "Target Loader": target_node = info
+        elif l_type == "Training Config": config_node = info
+
+    if not model_node_name:
+        raise ValueError("训练画布上未检测到导入的网络模型！请先导入 .bpnn 模型并进行连线。")
+
+    # 2. 提取并生成网络结构模型代码
+    model_graphs = {}
+    if model_node_name in project_data:
+        model_graphs["main"] = project_data[model_node_name]
+        for k in project_data.keys():
+            if k.startswith(model_node_name + "_"):
+                model_graphs[k] = project_data[k]
+    else:
+        model_graphs["main"] = {"nodes": {}, "connections": []}
+        
+    model_code = generate_pytorch_code(model_graphs, main_class_name)
+
+    # 3. 提取训练超参数和代码块
+    epochs = config_node["params"]["epochs"]["value"] if config_node else "100"
+    batch_size = config_node["params"]["batch_size"]["value"] if config_node else "32"
+    save_freq = config_node["params"]["save_freq"]["value"] if config_node else "10"
+    save_path = config_node["params"]["save_path"]["value"] if config_node else "./weights.pth"
+    
+    dataset_path = dataset_node["params"]["dataset_path"]["value"] if dataset_node else "./data"
+    
+    # 获取 Data 和 Target 的自定义代码块
+    data_code = dataset_node["params"]["custom_code"]["value"] if dataset_node else "def get_dataloader(path, batch_size):\n    pass"
+    target_code = target_node["params"]["custom_code"]["value"] if target_node else "def process_target(targets):\n    return targets"
+
+    # 处理 Loss 与 Optimizer 参数
+    loss_type = loss_node["type"] if loss_node else "CrossEntropyLoss"
+    loss_args = []
+    if loss_node:
+        for k, v in loss_node.get("params", {}).items():
+            val = v.get("value", "")
+            if val != "" and val != "None":
+                from compiler import format_param
+                fmt = format_param(val, v.get("type", "string"))
+                if fmt: loss_args.append(f"{k}={fmt}")
+    
+    optim_type = optim_node["type"] if optim_node else "Adam"
+    optim_args = []
+    if optim_node:
+        for k, v in optim_node.get("params", {}).items():
+            val = v.get("value", "")
+            if val != "" and val != "None":
+                from compiler import format_param
+                fmt = format_param(val, v.get("type", "string"))
+                if fmt: optim_args.append(f"{k}={fmt}")
+
+    # 4. 组装终极可运行的 train.py 代码
+    train_script = f"""{model_code}
+import torch.optim as optim
+
+# ==========================================
+# 1. 数据集加载与预处理模块
+# ==========================================
+{data_code}
+
+{target_code}
+
+# ==========================================
+# 2. 训练主循环
+# ==========================================
+def train():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"正在使用 {{device}} 准备训练...")
+    
+    # 初始化模型
+    model = {main_class_name}().to(device)
+    
+    # 准备数据、优化器和损失函数
+    dataloader = get_dataloader(r'{dataset_path}', {batch_size})
+    optimizer = optim.{optim_type}(model.parameters(), {', '.join(optim_args)})
+    criterion = nn.{loss_type}({', '.join(loss_args)})
+
+    print("🚀 开始训练...")
+    for epoch in range({epochs}):
+        model.train()
+        total_loss = 0.0
+        
+        for batch_idx, (inputs, targets) in enumerate(dataloader):
+            # 将数据和标签转移到设备
+            inputs = inputs.to(device)
+            targets = targets.to(device)
+            
+            # 对标签进行进一步处理 (根据 Target Loader 的逻辑)
+            targets = process_target(targets)
+
+            # 前向传播与误差计算
+            optimizer.zero_grad()
+            outputs = model(inputs) # Dataset 流入模型
+            loss = criterion(outputs, targets) # 模型预测值与 Target 的误差对比
+            
+            # 反向传播与优化
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+
+        # 打印日志
+        avg_loss = total_loss / len(dataloader)
+        print(f"Epoch [{{epoch+1}}/{epochs}] Loss: {{avg_loss:.6f}}")
+
+        # 定期保存权重
+        if (epoch + 1) % {save_freq} == 0:
+            import torch
+            torch.save(model.state_dict(), r'{save_path}')
+            print(f"✅ 阶段权重已保存至 {save_path}")
+
+if __name__ == '__main__':
+    train()
+"""
+    return train_script
+
+# ==========================================
+# 推理部署专用 PyTorch 代码编译器
+# ==========================================
+def generate_test_code(project_data, main_class_name="MyNetwork"):
+    test_graph = project_data.get("main", {})
+    nodes = test_graph.get("nodes", {})
+
+    model_node_name = None
+    config_node = None
+
+    for nid, info in nodes.items():
+        l_type = info.get("type", "")
+        if l_type == "Group": model_node_name = info.get("name", nid) 
+        elif l_type == "Inference Config": config_node = info
+
+    if not model_node_name:
+        raise ValueError("部署画布上未检测到导入的网络模型！请先导入 .bpnn 模型并进行连线。")
+
+    # 提取网络结构
+    model_graphs = {}
+    if model_node_name in project_data:
+        model_graphs["main"] = project_data[model_node_name]
+        for k in project_data.keys():
+            if k.startswith(model_node_name + "_"):
+                model_graphs[k] = project_data[k]
+    else:
+        model_graphs["main"] = {"nodes": {}, "connections": []}
+        
+    model_code = generate_pytorch_code(model_graphs, main_class_name)
+
+    # 提取推理配置
+    weights_path = config_node["params"]["weights_path"]["value"] if config_node else "./weights/model.pth"
+    device_str = config_node["params"]["device"]["value"] if config_node else "cuda"
+    
+    # 包装类名 (如 ResNet -> ResNetInference)
+    inference_class_name = f"{main_class_name}Inference"
+
+    # 组装极简推理 API
+    test_script = f"""{model_code}
+
+# ==========================================
+# 推理部署 API 类
+# ==========================================
+class {inference_class_name}:
+    def __init__(self, weights_path=r'{weights_path}', device='{device_str}'):
+        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
+        print(f"初始化推理引擎，运行设备: {{self.device}}")
+
+        # 初始化网络结构
+        self.model = {main_class_name}()
+
+        # 加载预训练权重
+        try:
+            self.model.load_state_dict(torch.load(weights_path, map_location=self.device))
+            print("✅ 预训练权重加载成功！")
+        except Exception as e:
+            print(f"⚠️ 权重加载失败，将使用随机初始化权重。错误信息: {{e}}")
+
+        self.model.to(self.device)
+        self.model.eval() # 开启推理模式，冻结 Dropout 和 BatchNorm
+
+    @torch.no_grad()
+    def generate(self, input_data):
+        \"\"\"
+        执行神经网络推理
+        :param input_data: 输入的 Tensor 数据
+        :return: 网络的预测输出
+        \"\"\"
+        if isinstance(input_data, torch.Tensor):
+            input_data = input_data.to(self.device)
+
+        # 前向传播推理
+        output = self.model(input_data)
+        return output
+
+if __name__ == '__main__':
+    # 快速测试代码
+    print("--- 部署模块连通性测试 ---")
+    api = {inference_class_name}()
+    
+    # 构建伪输入 (尺寸由你在蓝图中定义)
+    dummy_input = torch.randn(1, 3, 224, 224).to(api.device)
+    result = api.generate(dummy_input)
+    print("预测输出尺寸:", result.shape)
+"""
+    return test_script

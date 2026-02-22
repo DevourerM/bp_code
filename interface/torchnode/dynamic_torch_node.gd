@@ -105,6 +105,12 @@ func _rebuild_ui():
 					if not _is_updating_auto: parameter_changed.emit()
 				)
 				ctrl = ob
+			elif p.type == "code":
+				var btn = Button.new()
+				btn.text = "📝 编辑代码..."
+				btn.pressed.connect(func(): _open_code_editor(p))
+				ctrl = btn
+				
 			elif p.type == "int" or p.type == "float":
 				var sb = SpinBox.new(); sb.allow_greater = true
 				if p.name == "input_count": sb.min_value = 1 
@@ -174,3 +180,39 @@ func reset_auto_params():
 		if c is LineEdit or c is SpinBox: c.editable = true
 		if c is OptionButton: c.disabled = false
 		c.modulate = Color.WHITE
+
+# ==========================================
+# 弹出式多行代码编辑器逻辑
+# ==========================================
+func _open_code_editor(p: Dictionary):
+	var win = Window.new()
+	win.title = "编辑 Python 代码 - " + p.name
+	win.size = Vector2(700, 500)
+	win.exclusive = true # 模态窗口，必须关掉才能点别处
+	
+	var vbox = VBoxContainer.new()
+	vbox.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	win.add_child(vbox)
+	
+	var text_edit = TextEdit.new()
+	text_edit.text = str(p.get("value", p.get("default", "")))
+	text_edit.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	text_edit.add_theme_font_size_override("font_size", 14)
+	# 开启代码语法高亮的常用设置
+	text_edit.syntax_highlighter = CodeHighlighter.new()
+	text_edit.draw_tabs = true
+	vbox.add_child(text_edit)
+	
+	var save_btn = Button.new()
+	save_btn.text = "💾 保存并关闭"
+	save_btn.custom_minimum_size.y = 40
+	save_btn.pressed.connect(func():
+		p["value"] = text_edit.text
+		win.queue_free()
+		parameter_changed.emit()
+	)
+	vbox.add_child(save_btn)
+	
+	win.close_requested.connect(func(): win.queue_free())
+	add_child(win)
+	win.popup_centered()

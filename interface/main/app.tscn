@@ -1,0 +1,116 @@
+[gd_scene format=3 uid="uid://bik235sfm1tjm"]
+
+[ext_resource type="Script" uid="uid://di3qo6ppr7ejr" path="res://main/app.gd" id="1_4ytcu"]
+[ext_resource type="ButtonGroup" uid="uid://bf8b6j3vqun41" path="res://main/button_group.tres" id="2_1akdb"]
+
+[node name="app" type="Control" unique_id=1661946490]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_4ytcu")
+
+[node name="Panel" type="Panel" parent="." unique_id=544777507]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 40.0
+
+[node name="UILayer" type="CanvasLayer" parent="." unique_id=774928465]
+
+[node name="TopBar" type="HBoxContainer" parent="UILayer" unique_id=783975235]
+offset_left = 748.0
+offset_right = 1152.0
+offset_bottom = 30.0
+size_flags_horizontal = 8
+
+[node name="SaveBtn" type="Button" parent="UILayer/TopBar" unique_id=1474990007]
+layout_mode = 2
+text = "💾 保存项目"
+
+[node name="LoadBtn" type="Button" parent="UILayer/TopBar" unique_id=440118653]
+layout_mode = 2
+text = "📂 读取项目"
+
+[node name="ImportBtn" type="Button" parent="UILayer/TopBar" unique_id=250315307]
+layout_mode = 2
+text = "📦 导入模型"
+
+[node name="ExportBtn" type="Button" parent="UILayer/TopBar" unique_id=657883403]
+layout_mode = 2
+text = "🚀 导出代码"
+
+[node name="ButtomBar" type="HBoxContainer" parent="UILayer" unique_id=1903604236]
+offset_left = 1006.0
+offset_top = 621.0
+offset_right = 1152.0
+offset_bottom = 648.0
+size_flags_horizontal = 8
+
+[node name="model" type="Button" parent="UILayer/ButtomBar" unique_id=2039506685]
+layout_mode = 2
+toggle_mode = true
+button_group = ExtResource("2_1akdb")
+text = "model"
+
+[node name="train" type="Button" parent="UILayer/ButtomBar" unique_id=1562484589]
+layout_mode = 2
+toggle_mode = true
+button_group = ExtResource("2_1akdb")
+text = "train"
+
+[node name="test" type="Button" parent="UILayer/ButtomBar" unique_id=698685875]
+layout_mode = 2
+toggle_mode = true
+button_group = ExtResource("2_1akdb")
+text = "test"
+
+[node name="Dialogs" type="Node" parent="." unique_id=1537882197]
+
+[node name="SaveDialog" type="FileDialog" parent="Dialogs" unique_id=339454247]
+access = 2
+
+[node name="LoadDialog" type="FileDialog" parent="Dialogs" unique_id=1006438443]
+title = "Open a File"
+ok_button_text = "Load"
+file_mode = 0
+access = 2
+
+[node name="ExportDialog" type="FileDialog" parent="Dialogs" unique_id=1803029229]
+access = 2
+
+[node name="ExportWindow" type="Window" parent="Dialogs" unique_id=1049778400]
+oversampling_override = 1.0
+size = Vector2i(300, 150)
+visible = false
+
+[node name="VBoxContainer" type="VBoxContainer" parent="Dialogs/ExportWindow" unique_id=324654134]
+offset_right = 40.0
+offset_bottom = 40.0
+
+[node name="Label" type="Label" parent="Dialogs/ExportWindow/VBoxContainer" unique_id=1862292272]
+layout_mode = 2
+text = "Python 网络类名:"
+
+[node name="ClassInput" type="LineEdit" parent="Dialogs/ExportWindow/VBoxContainer" unique_id=648532260]
+layout_mode = 2
+placeholder_text = "MyNeuralNetwork"
+
+[node name="ConfirmExportBtn" type="Button" parent="Dialogs/ExportWindow/VBoxContainer" unique_id=469295943]
+layout_mode = 2
+text = "选择路径并导出..."
+
+[node name="MessageDialog" type="AcceptDialog" parent="Dialogs" unique_id=1929565145]
+
+[node name="ImportDialog" type="FileDialog" parent="Dialogs" unique_id=295857576]
+title = "Open a File"
+file_mode = 0
+access = 2
+
+[node name="EditorContainer" type="Control" parent="." unique_id=751211119]
+anchors_preset = 0
+offset_top = 34.0
+offset_right = 1152.0
+offset_bottom = 617.0
+size_flags_vertical = 3
