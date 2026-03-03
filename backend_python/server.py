@@ -1,3 +1,17 @@
+import os
+import sys
+
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    # 针对 PyInstaller 的运行环境修复
+    os.environ['PATH'] = sys._MEIPASS + os.pathsep + os.environ['PATH']
+    try:
+        os.add_dll_directory(sys._MEIPASS)
+        torch_lib_path = os.path.join(sys._MEIPASS, 'torch', 'lib')
+        if os.path.exists(torch_lib_path):
+            os.add_dll_directory(torch_lib_path)
+    except AttributeError:
+        pass
+
 import asyncio
 import websockets
 import json

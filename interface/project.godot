@@ -11,16 +11,21 @@ config_version=5
 [application]
 
 config/name="bp_coding"
+config/description="基于pytroch构建的蓝图编程应用"
 run/main_scene="uid://dek7rqrydffry"
 config/features=PackedStringArray("4.6", "Forward Plus")
-config/icon="res://icon.svg"
+boot_splash/show_image=false
+config/icon="uid://fasx40dkp6cn"
 
 [autoload]
 
 GlobalData="*uid://b7rnktg2tlj8l"
+BackendManager="*uid://dl1cansnp4d3v"
 
 [display]
 
+window/size/viewport_width=1980
+window/size/viewport_height=1200
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 

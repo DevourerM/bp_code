@@ -12,7 +12,7 @@ extends Control
 var current_editor: Node = null
 var current_tab: String = "model" 
 
-# 【核心修复】：为三个模块准备独立的内存工作区，防止节点互相串台！
+
 var workspaces = {
 	"model": {}, "train": {}, "test": {}
 }

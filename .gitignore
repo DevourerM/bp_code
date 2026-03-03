@@ -15,11 +15,10 @@ interface/.godot/
 interface/icon.svg   # 过滤指定的svg文件
 
 # ==================== Python 专属规则 ====================
-# 目录路径修正（你的原配置写的backpython是错的）
 backend_python/.venv/
 backend_python/.vscode/
+backend_python/test.py
 backend_python/__pycache__/
-# 过滤Python编译缓存文件（兜底，防止漏过滤）
 *.pyc
 *.pyo
 *.pyd

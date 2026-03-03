@@ -1,0 +1,63 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="bg-gradient" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#2E3440"/>
+            <stop offset="100%" stop-color="#1F242E"/>
+        </linearGradient>
+        <linearGradient id="border-gradient" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#5E81AC"/>
+            <stop offset="100%" stop-color="#3B4252"/>
+        </linearGradient>
+        <filter id="wire-glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+            <feMerge>
+                <feMergeNode in="coloredBlur"/>
+                <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+        </filter>
+    </defs>
+
+    <rect x="48" y="48" width="416" height="416" rx="80" fill="url(#bg-gradient)" stroke="url(#border-gradient)" stroke-width="6"/>
+    
+    <path d="M 128 48 L 384 48" stroke="#5E81AC" stroke-width="4" stroke-linecap="round" opacity="0.5"/>
+
+
+    <g transform="translate(256, 256) scale(0.75) translate(-256, -256)">
+        
+        <g filter="url(#wire-glow)" stroke-linecap="round" fill="none" stroke-width="8">
+            <path d="M 176 160 C 256 160, 256 256, 336 256" stroke="#88C0D0" opacity="0.9"/>
+            <path d="M 176 352 C 256 352, 256 256, 336 256" stroke="#88C0D0" opacity="0.9"/>
+        </g>
+
+        <g transform="translate(64, 112)">
+            <rect width="112" height="96" rx="12" fill="#2E3440" stroke="#4C566A" stroke-width="2"/>
+            <g clip-path="url(#node-top-clip)">
+                <rect width="112" height="32" fill="#88C0D0"/>
+            </g>
+            <circle cx="112" cy="48" r="10" fill="#88C0D0" stroke="#2E3440" stroke-width="2"/>
+        </g>
+
+        <g transform="translate(64, 304)">
+            <rect width="112" height="96" rx="12" fill="#2E3440" stroke="#4C566A" stroke-width="2"/>
+            <g clip-path="url(#node-top-clip)">
+                <rect width="112" height="32" fill="#81A1C1"/>
+            </g>
+            <circle cx="112" cy="48" r="10" fill="#81A1C1" stroke="#2E3440" stroke-width="2"/>
+        </g>
+
+        <g transform="translate(336, 208)">
+            <rect width="112" height="96" rx="12" fill="#2E3440" stroke="#4C566A" stroke-width="2"/>
+            <g clip-path="url(#node-top-clip)">
+                <rect width="112" height="32" fill="#BF616A"/>
+            </g>
+            <circle cx="0" cy="48" r="10" fill="#BF616A" stroke="#2E3440" stroke-width="2"/>
+        </g>
+
+    </g>
+    
+    <defs>
+        <clipPath id="node-top-clip">
+             <rect width="112" height="96" rx="12"/>
+        </clipPath>
+    </defs>
+</svg>

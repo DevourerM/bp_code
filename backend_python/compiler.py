@@ -1,202 +1,220 @@
-# compiler.py
 import re
-import ast
-
-def clean_name(name):
-    # 将节点名称转化为合法的 Python 变量名
-    return re.sub(r'\W|^(?=\d)', '_', name)
 
 # ==========================================
-# 【核心升级】：智能参数类型格式化器
+# 智能参数格式化引擎 (V1.2 类型安全强化版)
 # ==========================================
 def format_param(val_str, p_type):
+    """将前端传来的参数安全、智能地格式化为合法的 Python 代码"""
     val_str = str(val_str).strip()
     
-    # 1. 忽略空值和 None
-    if val_str == "" or val_str == "None":
-        return None
-    
-    # 2. 处理明确的 Bool 类型
-    if p_type == "bool":
-        return "True" if val_str.lower() == "true" else "False"
+    if val_str == "None":
+        return "None"
         
-    # 3. 处理明确的整数 (解决 SpinBox 传过来 1.0 的问题)
-    elif p_type == "int":
+    # 1. 强转整数 (修复: dilation=1.0 -> 1)
+    if p_type == "int":
         try:
             return str(int(float(val_str)))
-        except:
-            pass
+        except ValueError:
+            return val_str
             
-    # 4. 处理明确的浮点数
+    # 2. 浮点数
     elif p_type == "float":
-        try:
-            return str(float(val_str))
-        except:
-            pass
-
-    # 5. 【智能嗅探】：尝试将其作为 Python 代码求值
-    try:
-        # 如果是 "5"，求值后是 int 类型的 5
-        # 如果是 "(3, 3)"，求值后是 tuple 类型的 (3, 3)
-        evaluated = ast.literal_eval(val_str)
+        return val_str
         
-        # 如果求值后发现确实是个纯字符串，加上单引号
-        if isinstance(evaluated, str):
-            return f"'{evaluated}'"
+    # 3. 布尔值
+    elif p_type == "bool":
+        return "True" if val_str.lower() in ["true", "1", "t", "yes"] else "False"
+        
+    # 4. 元组
+    elif p_type == "tuple":
+        if not val_str.startswith("("): 
+            val_str = f"({val_str})"
+        return val_str
+        
+    # 5. 智能字符串 (核心修复点)
+    elif p_type == "string":
+        # 如果是纯数字（如 "3"），说明它是被误判为 string 的必填 int 参数（如 in_channels）
+        if val_str.isdigit():
+            return val_str
             
-        # 否则直接返回它的代码形态
-        return str(evaluated)
-    except Exception:
-        # 6. 如果求值报错 (比如 "zeros", "reflect")，说明它是普通字符串，安全加引号
+        # 如果是浮点数格式（如 "3.0"），且本质是整数，转成整数 "3"
+        try:
+            f_val = float(val_str)
+            if f_val.is_integer():
+                return str(int(f_val))
+            return val_str
+        except ValueError:
+            pass
+            
+        # 如果是一个元组或列表格式（如 "(3, 3)" 或 "[1, 2]"）
+        if (val_str.startswith('(') and val_str.endswith(')')) or \
+           (val_str.startswith('[') and val_str.endswith(']')):
+            return val_str
+            
+        # 如果前端传过来已经自带引号了，直接返回
+        if (val_str.startswith("'") and val_str.endswith("'")) or \
+           (val_str.startswith('"') and val_str.endswith('"')):
+            return val_str
+            
+        # 真正的纯文本字符串（如 padding_mode='zeros'），为其加上引号
         return f"'{val_str}'"
 
+    return val_str
+
+def clean_name(name):
+    """清理名称，移除特殊字符，确保是合法的 Python 变量名"""
+    return re.sub(r'\W|^(?=\d)', '_', name)
+
+
+# ==========================================
+# 核心网络代码生成器
+# ==========================================
 def generate_pytorch_code(project_data, main_class_name="MyNetwork"):
-    code_blocks = []
-    code_blocks.append("import torch")
-    code_blocks.append("import torch.nn as nn\n")
+    model_graphs = project_data
+    main_graph = model_graphs.get("main", {"nodes": {}, "connections": []})
+    nodes = main_graph.get("nodes", {})
+    connections = main_graph.get("connections", [])
+
+    node_var_map = {}
+    type_counters = {}
+
+    for nid, info in nodes.items():
+        ntype = info.get("type", "Unknown")
+        safe_type = clean_name(ntype)
+        
+        if safe_type == "Data_Input":
+            base_name = "input"
+        elif safe_type == "Data_Output":
+            base_name = "output"
+        else:
+            base_name = safe_type
+
+        if base_name not in type_counters:
+            type_counters[base_name] = 1
+        else:
+            type_counters[base_name] += 1
+            
+        node_var_map[nid] = f"{base_name}_{type_counters[base_name]}"
+
+    in_degree = {nid: 0 for nid in nodes}
+    adj_list = {nid: [] for nid in nodes}
+    for conn in connections:
+        from_n = conn["from"]
+        to_n = conn["to"]
+        if from_n in nodes and to_n in nodes:
+            adj_list[from_n].append(conn)
+            in_degree[to_n] += 1
+
+    queue = [nid for nid, deg in in_degree.items() if deg == 0]
+    topo_order = []
+    while queue:
+        curr = queue.pop(0)
+        topo_order.append(curr)
+        for conn in adj_list[curr]:
+            to_n = conn["to"]
+            in_degree[to_n] -= 1
+            if in_degree[to_n] == 0:
+                queue.append(to_n)
+
+    init_lines = []
+    forward_lines = []
     
-    # 优先编译子空间，确保它们在主网络之前被定义
-    graphs_to_compile = [g for g in project_data.keys() if g != "main"] + ["main"]
+    input_nodes = [nid for nid in topo_order if nodes[nid].get("type") == "Data Input"]
+    forward_args = ["self"] + [f"x_{i}" for i in range(len(input_nodes))]
     
-    for graph_id in graphs_to_compile:
-        graph = project_data[graph_id]
-        nodes = graph.get("nodes", {})
-        conns = graph.get("connections", [])
+    out_vars = {nid: {} for nid in nodes}
+    input_idx = 0
+
+    for nid in topo_order:
+        info = nodes[nid]
+        ntype = info.get("type", "")
+        params = info.get("params", {})
+        readable_name = node_var_map[nid]  
         
-        c_name = main_class_name if graph_id == "main" else f"SubNet_{clean_name(graph_id)}"
+        args = []
+        for k, v in params.items():
+            val = v.get("value", v.get("default", ""))
+            if val != "" and str(val) != "None":
+                fmt = format_param(val, v.get("type", "string"))
+                if fmt: args.append(f"{k}={fmt}")
+                
+        args_str = ", ".join(args)
         
-        init_lines = []
-        forward_lines = []
-        
-        # 1. 解析 Input
-        data_inputs = [nid for nid, info in nodes.items() if info["type"] == "Data Input"]
-        def sort_key(nid):
-            nid_str = str(nid)
-            if nid_str.startswith("input") and nid_str[5:].isdigit():
-                return int(nid_str[5:])
-            return nodes[nid].get("pos_y", 0)
-        data_inputs.sort(key=sort_key)
-        
-        input_args = ["self"]
-        for i, nid in enumerate(data_inputs):
-            arg_name = f"x_{i}"
-            input_args.append(arg_name)
-            forward_lines.append(f"        v_{clean_name(nid)} = {arg_name}")
-        
-        # 2. 拓扑排序
-        in_degree = {nid: 0 for nid in nodes}
-        adj = {nid: [] for nid in nodes}
-        incoming_ports = {nid: {} for nid in nodes}
-        
-        for c in conns:
-            f, t, tp = c["from"], c["to"], c.get("to_port", 0)
-            adj[f].append(t)
-            in_degree[t] += 1
-            incoming_ports[t][tp] = f
+        if ntype == "Data Input":
+            var_name = f"v_{readable_name}" 
+            forward_lines.append(f"        {var_name} = x_{input_idx}")
+            out_vars[nid][0] = var_name
+            input_idx += 1
             
-        q = [nid for nid in nodes if in_degree[nid] == 0]
-        topo_order = []
-        while q:
-            curr = q.pop(0)
-            topo_order.append(curr)
-            for neighbor in adj[curr]:
-                in_degree[neighbor] -= 1
-                if in_degree[neighbor] == 0:
-                    q.append(neighbor)
-                    
-        for nid in nodes:
-            if nid not in topo_order: topo_order.append(nid)
-                
-        # 3. 生成运算代码
-        for nid in topo_order:
-            info = nodes[nid]
-            l_type = info["type"]
-            if l_type == "Data Input": continue
+        elif ntype == "Data Output":
+            pass 
             
-            # 搜集输入变量
-            req_inputs = []
-            ins = info.get("inputs", [])
-            req_count = len(ins) if ins else (1 if info.get("main_in") else 0)
-            for port in range(req_count):
-                src_node = incoming_ports[nid].get(port)
-                req_inputs.append(f"v_{clean_name(src_node)}" if src_node else "None")
+        elif ntype == "Group":
+            sub_name = info.get("name", "SubGraph")
+            fn_name = f"fn_{readable_name}"
+            var_name = f"v_{readable_name}"
             
-            # 【应用参数清洗逻辑】
-            p_raw = info.get("params", {})
-            params = {}
-            for k, v in p_raw.items():
-                val_str = v.get("value", "") if isinstance(v, dict) else str(v)
-                p_type = v.get("type", "string") if isinstance(v, dict) else "string"
-                
-                fmt_val = format_param(val_str, p_type)
-                if fmt_val is not None:
-                    params[k] = fmt_val
+            init_lines.append(f"        self.{fn_name} = {sub_name}()")
             
-            out_var = f"v_{clean_name(nid)}"
+            in_ports = []
+            for conn in connections:
+                if conn["to"] == nid:
+                    in_ports.append((conn["to_port"], conn["from"], conn["from_port"]))
+            in_ports.sort(key=lambda x: x[0])
+            in_args = [out_vars[f_n][f_p] for _, f_n, f_p in in_ports]
             
-            if l_type == "Data Output":
-                ret_val = req_inputs[0] if req_inputs else "None"
-                forward_lines.append(f"        return {ret_val}")
-                continue
+            forward_lines.append(f"        {var_name} = self.{fn_name}({', '.join(in_args)})")
+            out_vars[nid][0] = var_name
+            
+        else:
+            fn_name = f"fn_{readable_name}" 
+            var_name = f"v_{readable_name}" 
+            
+            init_lines.append(f"        self.{fn_name} = nn.{ntype}({args_str})")
+            
+            in_ports = {}
+            for conn in connections:
+                if conn["to"] == nid:
+                    in_ports[conn["to_port"]] = out_vars[conn["from"]][conn["from_port"]]
+            
+            in_args = [in_ports[i] for i in sorted(in_ports.keys())]
+            
+            if not in_args:
+                forward_lines.append(f"        {var_name} = self.{fn_name}()")
+            else:
+                forward_lines.append(f"        {var_name} = self.{fn_name}({', '.join(in_args)})")
                 
-            if l_type == "Group":
-                sub_class = f"SubNet_{clean_name(nid)}"
-                layer_name = f"group_{clean_name(nid)}"
-                init_lines.append(f"        self.{layer_name} = {sub_class}()")
-                forward_lines.append(f"        {out_var} = self.{layer_name}({', '.join(req_inputs)})")
-                
-            elif l_type == "Loop":
-                sub_class = f"SubNet_{clean_name(nid)}"
-                layer_name = f"loop_{clean_name(nid)}"
-                iters = params.get("iterations", "3")
-                init_lines.append(f"        self.{layer_name} = {sub_class}()")
-                forward_lines.append(f"        {out_var} = {req_inputs[0]}")
-                forward_lines.append(f"        for _ in range({iters}):")
-                forward_lines.append(f"            {out_var} = self.{layer_name}({out_var})")
-                
-            elif l_type == "Concat":
-                dim = params.get("dim", "1")
-                forward_lines.append(f"        {out_var} = torch.cat(({', '.join(req_inputs)}), dim={dim})")
-                
-            elif l_type == "Math":
-                op = params.get("op", "'add'").replace("'", "").replace('"', "")
-                a, b = req_inputs[0], req_inputs[1] if len(req_inputs) > 1 else "None"
-                if "add" in op: forward_lines.append(f"        {out_var} = {a} + {b}")
-                elif "sub" in op: forward_lines.append(f"        {out_var} = {a} - {b}")
-                elif "mul" in op: forward_lines.append(f"        {out_var} = {a} * {b}")
-                elif "div" in op: forward_lines.append(f"        {out_var} = {a} / {b}")
-                elif "matmul" in op: forward_lines.append(f"        {out_var} = torch.matmul({a}, {b})")
-                
-            elif l_type == "Value Display":
-                forward_lines.append(f"        {out_var} = {req_inputs[0]}")
-                
-            else: # 常规 PyTorch 层
-                layer_name = f"op_{clean_name(nid)}"
-                clean_args = [f"{k}={v}" for k, v in params.items()]
-                init_lines.append(f"        self.{layer_name} = nn.{l_type}({', '.join(clean_args)})")
-                forward_lines.append(f"        {out_var} = self.{layer_name}({req_inputs[0]})")
-                
-        # 4. 组装 Python 类
-        code_blocks.append(f"class {c_name}(nn.Module):")
-        code_blocks.append(f"    def __init__(self):")
-        code_blocks.append(f"        super({c_name}, self).__init__()")
-        if not init_lines: code_blocks.append(f"        pass")
-        else: code_blocks.extend(init_lines)
-        code_blocks.append("")
+            out_vars[nid][0] = var_name
+
+    output_nodes = [nid for nid in topo_order if nodes[nid].get("type") == "Data Output"]
+    return_vars = []
+    for nid in output_nodes:
+        for conn in connections:
+            if conn["to"] == nid:
+                return_vars.append(out_vars[conn["from"]][conn["from_port"]])
+
+    if not return_vars:
+        forward_lines.append("        return None")
+    else:
+        forward_lines.append(f"        return {', '.join(return_vars)}")
+
+    code = f"import torch\nimport torch.nn as nn\n\n"
+    code += f"class {main_class_name}(nn.Module):\n"
+    code += "    def __init__(self):\n"
+    code += f"        super({main_class_name}, self).__init__()\n"
+    
+    if init_lines:
+        code += "\n".join(init_lines) + "\n"
+    else:
+        code += "        pass\n"
         
-        code_blocks.append(f"    def forward({', '.join(input_args)}):")
-        if not forward_lines: code_blocks.append(f"        pass")
-        else: code_blocks.extend(forward_lines)
-        code_blocks.append("\n")
-        
-    return "\n".join(code_blocks)
+    code += "\n"
+    code += f"    def forward({', '.join(forward_args)}):\n"
+    code += "\n".join(forward_lines) + "\n"
+
+    return code
 
 
-# 将这段代码追加到 compiler.py 文件的最下方
-
-# ==========================================
-# 训练专用 PyTorch 代码编译器
-# ==========================================
 # ==========================================
 # 训练专用 PyTorch 代码编译器
 # ==========================================
@@ -204,7 +222,6 @@ def generate_train_code(project_data, main_class_name="MyNetwork"):
     train_graph = project_data.get("main", {})
     nodes = train_graph.get("nodes", {})
 
-    # 1. 扫描训练画布，寻找关键组件
     model_node_name = None
     loss_node = None
     optim_node = None
@@ -224,7 +241,6 @@ def generate_train_code(project_data, main_class_name="MyNetwork"):
     if not model_node_name:
         raise ValueError("训练画布上未检测到导入的网络模型！请先导入 .bpnn 模型并进行连线。")
 
-    # 2. 提取并生成网络结构模型代码
     model_graphs = {}
     if model_node_name in project_data:
         model_graphs["main"] = project_data[model_node_name]
@@ -236,26 +252,21 @@ def generate_train_code(project_data, main_class_name="MyNetwork"):
         
     model_code = generate_pytorch_code(model_graphs, main_class_name)
 
-    # 3. 提取训练超参数和代码块
     epochs = config_node["params"]["epochs"]["value"] if config_node else "100"
     batch_size = config_node["params"]["batch_size"]["value"] if config_node else "32"
     save_freq = config_node["params"]["save_freq"]["value"] if config_node else "10"
     save_path = config_node["params"]["save_path"]["value"] if config_node else "./weights.pth"
-    
     dataset_path = dataset_node["params"]["dataset_path"]["value"] if dataset_node else "./data"
     
-    # 获取 Data 和 Target 的自定义代码块
     data_code = dataset_node["params"]["custom_code"]["value"] if dataset_node else "def get_dataloader(path, batch_size):\n    pass"
     target_code = target_node["params"]["custom_code"]["value"] if target_node else "def process_target(targets):\n    return targets"
 
-    # 处理 Loss 与 Optimizer 参数
     loss_type = loss_node["type"] if loss_node else "CrossEntropyLoss"
     loss_args = []
     if loss_node:
         for k, v in loss_node.get("params", {}).items():
             val = v.get("value", "")
-            if val != "" and val != "None":
-                from compiler import format_param
+            if val != "" and str(val) != "None":
                 fmt = format_param(val, v.get("type", "string"))
                 if fmt: loss_args.append(f"{k}={fmt}")
     
@@ -264,12 +275,10 @@ def generate_train_code(project_data, main_class_name="MyNetwork"):
     if optim_node:
         for k, v in optim_node.get("params", {}).items():
             val = v.get("value", "")
-            if val != "" and val != "None":
-                from compiler import format_param
+            if val != "" and str(val) != "None":
                 fmt = format_param(val, v.get("type", "string"))
                 if fmt: optim_args.append(f"{k}={fmt}")
 
-    # 4. 组装终极可运行的 train.py 代码
     train_script = f"""{model_code}
 import torch.optim as optim
 
@@ -287,10 +296,8 @@ def train():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"正在使用 {{device}} 准备训练...")
     
-    # 初始化模型
     model = {main_class_name}().to(device)
     
-    # 准备数据、优化器和损失函数
     dataloader = get_dataloader(r'{dataset_path}', {batch_size})
     optimizer = optim.{optim_type}(model.parameters(), {', '.join(optim_args)})
     criterion = nn.{loss_type}({', '.join(loss_args)})
@@ -301,29 +308,22 @@ def train():
         total_loss = 0.0
         
         for batch_idx, (inputs, targets) in enumerate(dataloader):
-            # 将数据和标签转移到设备
             inputs = inputs.to(device)
             targets = targets.to(device)
-            
-            # 对标签进行进一步处理 (根据 Target Loader 的逻辑)
             targets = process_target(targets)
 
-            # 前向传播与误差计算
             optimizer.zero_grad()
-            outputs = model(inputs) # Dataset 流入模型
-            loss = criterion(outputs, targets) # 模型预测值与 Target 的误差对比
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
             
-            # 反向传播与优化
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item()
 
-        # 打印日志
         avg_loss = total_loss / len(dataloader)
         print(f"Epoch [{{epoch+1}}/{epochs}] Loss: {{avg_loss:.6f}}")
 
-        # 定期保存权重
         if (epoch + 1) % {save_freq} == 0:
             import torch
             torch.save(model.state_dict(), r'{save_path}')
@@ -333,6 +333,7 @@ if __name__ == '__main__':
     train()
 """
     return train_script
+
 
 # ==========================================
 # 推理部署专用 PyTorch 代码编译器
@@ -352,7 +353,6 @@ def generate_test_code(project_data, main_class_name="MyNetwork"):
     if not model_node_name:
         raise ValueError("部署画布上未检测到导入的网络模型！请先导入 .bpnn 模型并进行连线。")
 
-    # 提取网络结构
     model_graphs = {}
     if model_node_name in project_data:
         model_graphs["main"] = project_data[model_node_name]
@@ -364,14 +364,11 @@ def generate_test_code(project_data, main_class_name="MyNetwork"):
         
     model_code = generate_pytorch_code(model_graphs, main_class_name)
 
-    # 提取推理配置
     weights_path = config_node["params"]["weights_path"]["value"] if config_node else "./weights/model.pth"
     device_str = config_node["params"]["device"]["value"] if config_node else "cuda"
     
-    # 包装类名 (如 ResNet -> ResNetInference)
     inference_class_name = f"{main_class_name}Inference"
 
-    # 组装极简推理 API
     test_script = f"""{model_code}
 
 # ==========================================
@@ -382,10 +379,8 @@ class {inference_class_name}:
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         print(f"初始化推理引擎，运行设备: {{self.device}}")
 
-        # 初始化网络结构
         self.model = {main_class_name}()
 
-        # 加载预训练权重
         try:
             self.model.load_state_dict(torch.load(weights_path, map_location=self.device))
             print("✅ 预训练权重加载成功！")
@@ -393,7 +388,7 @@ class {inference_class_name}:
             print(f"⚠️ 权重加载失败，将使用随机初始化权重。错误信息: {{e}}")
 
         self.model.to(self.device)
-        self.model.eval() # 开启推理模式，冻结 Dropout 和 BatchNorm
+        self.model.eval() 
 
     @torch.no_grad()
     def generate(self, input_data):
@@ -405,16 +400,13 @@ class {inference_class_name}:
         if isinstance(input_data, torch.Tensor):
             input_data = input_data.to(self.device)
 
-        # 前向传播推理
         output = self.model(input_data)
         return output
 
 if __name__ == '__main__':
-    # 快速测试代码
     print("--- 部署模块连通性测试 ---")
     api = {inference_class_name}()
     
-    # 构建伪输入 (尺寸由你在蓝图中定义)
     dummy_input = torch.randn(1, 3, 224, 224).to(api.device)
     result = api.generate(dummy_input)
     print("预测输出尺寸:", result.shape)

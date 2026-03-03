@@ -20,9 +20,12 @@ offset_bottom = 40.0
 [node name="UILayer" type="CanvasLayer" parent="." unique_id=774928465]
 
 [node name="TopBar" type="HBoxContainer" parent="UILayer" unique_id=783975235]
-offset_left = 748.0
-offset_right = 1152.0
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -404.0
 offset_bottom = 30.0
+grow_horizontal = 0
 size_flags_horizontal = 8
 
 [node name="SaveBtn" type="Button" parent="UILayer/TopBar" unique_id=1474990007]
@@ -42,10 +45,15 @@ layout_mode = 2
 text = "🚀 导出代码"
 
 [node name="ButtomBar" type="HBoxContainer" parent="UILayer" unique_id=1903604236]
-offset_left = 1006.0
-offset_top = 621.0
-offset_right = 1152.0
-offset_bottom = 648.0
+anchors_preset = 3
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -146.0
+offset_top = -27.0
+grow_horizontal = 0
+grow_vertical = 0
 size_flags_horizontal = 8
 
 [node name="model" type="Button" parent="UILayer/ButtomBar" unique_id=2039506685]
@@ -109,8 +117,10 @@ file_mode = 0
 access = 2
 
 [node name="EditorContainer" type="Control" parent="." unique_id=751211119]
-anchors_preset = 0
-offset_top = 34.0
-offset_right = 1152.0
-offset_bottom = 617.0
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
 size_flags_vertical = 3

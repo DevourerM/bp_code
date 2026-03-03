@@ -10,7 +10,7 @@ var breadcrumb_container: HBoxContainer
 const DynamicNodeScene = preload("res://torchnode/dynamic_torch_node.tscn") 
 
 var last_mouse_position: Vector2 = Vector2.ZERO
-var clipboard_config: Dictionary = {}
+var clipboard_nodes: Array = []
 var search_popup: PopupPanel; var search_box: LineEdit; var node_tree: Tree
 var shape_labels: Dictionary = {}
 
@@ -264,9 +264,11 @@ func _setup_search_menu():
 func _populate_tree(filter_text: String):
 	node_tree.clear()
 	var root = node_tree.create_item()
-	if filter_text == "" and not clipboard_config.is_empty():
+	if filter_text == "" and not clipboard_nodes.is_empty():
 		var paste_item = node_tree.create_item(root)
-		paste_item.set_text(0, "📋 粘贴 (Paste)"); paste_item.set_metadata(0, {"is_paste": true}); paste_item.set_custom_color(0, Color(1, 0.8, 0.2)) 
+		paste_item.set_text(0, "📋 粘贴 " + str(clipboard_nodes.size()) + " 个节点") 
+		paste_item.set_metadata(0, {"is_paste": true})
+		paste_item.set_custom_color(0, Color(1, 0.8, 0.2))
 	filter_text = filter_text.to_lower()
 	for category in GlobalData.node_library.keys():
 		var cat_item = node_tree.create_item(root)
@@ -288,9 +290,21 @@ func _on_tree_item_chosen():
 	if not selected_item: return
 	var meta = selected_item.get_metadata(0)
 	if meta == null: return
-	if meta.has("is_paste"): _create_node(clipboard_config.duplicate(true), last_mouse_position)
-	else: _create_node(GlobalData.node_library[meta["category"]][meta["name"]], last_mouse_position)
-	selected_item.deselect(0); search_popup.hide() 
+	
+	if meta.has("is_paste"): 
+		# 粘贴前，取消画布上现有节点的选中状态
+		for n in graph_edit.get_children():
+			if n is GraphNode: n.selected = false 
+			
+		# 遍历剪贴板，根据鼠标位置 + 相对偏移量批量生成节点
+		for item in clipboard_nodes:
+			var new_node = _create_node(item["config"].duplicate(true), last_mouse_position + item["offset"])
+			new_node.selected = true # 刚粘贴出来的新节点默认高亮选中，体验更好
+	else: 
+		_create_node(GlobalData.node_library[meta["category"]][meta["name"]], last_mouse_position)
+		
+	selected_item.deselect(0)
+	search_popup.hide()
 
 func _on_graph_edit_popup_request(pos: Vector2):
 	last_mouse_position = (pos + graph_edit.scroll_offset) / graph_edit.zoom
@@ -305,20 +319,42 @@ func _build_action_menu():
 
 func _on_node_gui_input(event: InputEvent, node: GraphNode):
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
-		for n in graph_edit.get_children():
-			if n is GraphNode: n.selected = (n == node)
-		action_menu.position = get_viewport().get_mouse_position(); action_menu.popup()
+		if not node.selected:
+			for n in graph_edit.get_children():
+				if n is GraphNode: n.selected = (n == node)
+				
+		action_menu.position = get_viewport().get_mouse_position()
+		action_menu.popup()
 		node.accept_event()
 
 func _on_action_menu_id_pressed(id: int):
-	var selected_node = null
+	# 收集当前所有被选中的节点
+	var selected_nodes = []
 	for n in graph_edit.get_children():
-		if n is GraphNode and n.selected: selected_node = n; break
-	if not selected_node: return
+		if n is GraphNode and n.selected: 
+			selected_nodes.append(n)
+			
+	if selected_nodes.is_empty(): return
+	
 	match id:
-		0: clipboard_config = selected_node.config.duplicate(true)
-		1: clipboard_config = selected_node.config.duplicate(true); _safe_delete_node(selected_node)
-		2: _safe_delete_node(selected_node)
+		0: # 复制
+			_copy_selected_nodes(selected_nodes)
+		1: # 剪切
+			_copy_selected_nodes(selected_nodes)
+			for n in selected_nodes: _safe_delete_node(n)
+		2: # 删除
+			for n in selected_nodes: _safe_delete_node(n)
+
+# 新增辅助函数：批量复制进剪贴板
+func _copy_selected_nodes(nodes: Array):
+	clipboard_nodes.clear()
+	# 以第一个节点为基准原点，计算其他节点的相对偏移量（保证粘贴时阵型不乱）
+	var base_pos = nodes[0].position_offset
+	for n in nodes:
+		clipboard_nodes.append({
+			"config": n.config.duplicate(true),
+			"offset": n.position_offset - base_pos
+		})
 
 func _safe_delete_node(node: GraphNode):
 	var node_name = node.name
