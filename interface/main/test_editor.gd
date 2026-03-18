@@ -10,7 +10,8 @@ var breadcrumb_container: HBoxContainer
 const DynamicNodeScene = preload("res://torchnode/dynamic_torch_node.tscn") 
 
 var last_mouse_position: Vector2 = Vector2.ZERO
-var clipboard_config: Dictionary = {}
+# 【核心升级】：改为阵列剪贴板，支持批量复制
+var clipboard_nodes: Array = [] 
 var search_popup: PopupPanel; var search_box: LineEdit; var node_tree: Tree
 var shape_labels: Dictionary = {}
 
@@ -50,6 +51,47 @@ func _process(_delta):
 				lbl.position = mid_local - (lbl.size / 2.0)
 
 # ==========================================
+# 【新增】：全局快捷键监听
+# ==========================================
+func _unhandled_input(event: InputEvent):
+	if event is InputEventKey and event.pressed and not event.is_echo():
+		# 防御：输入框打字时拦截快捷键
+		var focus_owner = get_viewport().gui_get_focus_owner()
+		if focus_owner is LineEdit or focus_owner is TextEdit: return 
+			
+		var is_cmd = event.ctrl_pressed or event.meta_pressed 
+		var sel = _get_selected_nodes()
+		
+		match event.keycode:
+			KEY_C: # 复制
+				if is_cmd and not sel.is_empty():
+					_copy_selected_nodes(sel)
+					get_viewport().set_input_as_handled()
+			KEY_X: # 剪切
+				if is_cmd and not sel.is_empty():
+					_copy_selected_nodes(sel)
+					for n in sel: _safe_delete_node(n)
+					get_viewport().set_input_as_handled()
+			KEY_V: # 粘贴
+				if is_cmd and not clipboard_nodes.is_empty():
+					_paste_nodes_from_clipboard()
+					get_viewport().set_input_as_handled()
+			KEY_A: # 全选
+				if is_cmd:
+					for n in graph_edit.get_children():
+						if n is GraphNode: n.selected = true
+					get_viewport().set_input_as_handled()
+			KEY_D: # 快速原位复制
+				if is_cmd and not sel.is_empty():
+					_copy_selected_nodes(sel)
+					_paste_nodes_from_clipboard(Vector2(20, 20)) 
+					get_viewport().set_input_as_handled()
+			KEY_DELETE, KEY_BACKSPACE: # 删除
+				if not sel.is_empty():
+					for n in sel: _safe_delete_node(n)
+					get_viewport().set_input_as_handled()
+
+# ==========================================
 # 导入模型化身节点
 # ==========================================
 func import_model_as_group(model_data: Dictionary, model_name: String):
@@ -57,7 +99,6 @@ func import_model_as_group(model_data: Dictionary, model_name: String):
 	var nodes = main_graph.get("nodes", {})
 	var connections = main_graph.get("connections", [])
 	
-	# 【核心修复 1】：做无缝转接手术！将模型主层的 Data Input/Output 重命名为 input0/output0
 	if nodes.has("Data Input"):
 		nodes["input0"] = nodes["Data Input"].duplicate()
 		nodes.erase("Data Input")
@@ -79,7 +120,6 @@ func import_model_as_group(model_data: Dictionary, model_name: String):
 			
 	if expected_input_count == 0: expected_input_count = 1
 	
-	# 【核心修复 2】：取消破坏内部引用的前缀，直接进行隔离导入
 	for graph_id in model_data.keys():
 		if graph_id == "main":
 			GlobalData.project_graphs[model_name] = model_data[graph_id]
@@ -148,7 +188,6 @@ func load_graph_state(graph_id: String, expected_input_count: int = 1):
 	
 	if data.get("nodes", {}).is_empty():
 		if graph_id == "main":
-			# 【核心生成逻辑】
 			var test_cat = "Testing (部署推理)"
 			var sys_cat_ref = "System (系统节点)"
 			
@@ -209,6 +248,36 @@ func load_graph_state(graph_id: String, expected_input_count: int = 1):
 						_safe_delete_node(child)
 						
 	_refresh_breadcrumbs()
+	_request_shape_inference()
+
+# ==========================================
+# 内部连线与交互辅助函数
+# ==========================================
+func _get_selected_nodes() -> Array:
+	var selected = []
+	for n in graph_edit.get_children():
+		if n is GraphNode and n.selected: selected.append(n)
+	return selected
+
+func _copy_selected_nodes(nodes: Array):
+	clipboard_nodes.clear()
+	if nodes.is_empty(): return
+	var base_pos = nodes[0].position_offset
+	for n in nodes:
+		clipboard_nodes.append({
+			"config": n.config.duplicate(true),
+			"offset": n.position_offset - base_pos
+		})
+
+func _paste_nodes_from_clipboard(extra_offset: Vector2 = Vector2.ZERO):
+	if clipboard_nodes.is_empty(): return
+	for n in graph_edit.get_children():
+		if n is GraphNode: n.selected = false 
+	var mouse_pos = graph_edit.get_local_mouse_position()
+	var paste_base_pos = (mouse_pos + graph_edit.scroll_offset) / graph_edit.zoom + extra_offset
+	for item in clipboard_nodes:
+		var new_node = _create_node(item["config"].duplicate(true), paste_base_pos + item["offset"])
+		new_node.selected = true
 	_request_shape_inference()
 
 func _request_shape_inference():
@@ -306,7 +375,6 @@ func _refresh_breadcrumbs():
 	var path = GlobalData.current_path
 	for i in range(path.size()):
 		var btn = Button.new()
-		# 【修复】：在这里修正了 Test 字样的显示！
 		btn.text = "Test" if str(path[i]) == "main" else str(path[i])
 		btn.add_theme_font_size_override("font_size", 16)
 		btn.pressed.connect(func(): _go_to_breadcrumb_level(i))
@@ -315,54 +383,6 @@ func _refresh_breadcrumbs():
 			var sep = Label.new(); sep.text = "  >>  "
 			breadcrumb_container.add_child(sep)
 
-func _setup_search_menu():
-	search_popup = PopupPanel.new()
-	var vbox = VBoxContainer.new()
-	search_box = LineEdit.new(); search_box.placeholder_text = "搜索 PyTorch 节点..."
-	search_box.text_changed.connect(_on_search_text_changed)
-	vbox.add_child(search_box)
-	node_tree = Tree.new(); node_tree.custom_minimum_size = Vector2(320, 450); node_tree.hide_root = true 
-	node_tree.item_selected.connect(_on_tree_item_chosen)
-	node_tree.item_activated.connect(_on_tree_item_chosen) 
-	vbox.add_child(node_tree); search_popup.add_child(vbox); add_child(search_popup) 
-
-func _populate_tree(filter_text: String):
-	node_tree.clear()
-	var root = node_tree.create_item()
-	if filter_text == "" and not clipboard_config.is_empty():
-		var paste_item = node_tree.create_item(root)
-		paste_item.set_text(0, "📋 粘贴 (Paste)"); paste_item.set_metadata(0, {"is_paste": true}); paste_item.set_custom_color(0, Color(1, 0.8, 0.2)) 
-	filter_text = filter_text.to_lower()
-	for category in GlobalData.node_library.keys():
-		var cat_item = node_tree.create_item(root)
-		cat_item.set_text(0, category); cat_item.set_selectable(0, false); cat_item.set_custom_bg_color(0, Color(0.15, 0.15, 0.15))
-		var has_visible_children = false
-		for node_name in GlobalData.node_library[category].keys():
-			if filter_text == "" or filter_text in node_name.to_lower() or filter_text in category.to_lower():
-				var item = node_tree.create_item(cat_item)
-				item.set_text(0, node_name); item.set_metadata(0, {"category": category, "name": node_name})
-				item.set_tooltip_text(0, "[ " + node_name + " ]\n" + GlobalData.node_library[category][node_name].get("description", "暂无说明文档"))
-				has_visible_children = true
-		if not has_visible_children: cat_item.free()
-		elif filter_text != "": cat_item.collapsed = false 
-
-func _on_search_text_changed(new_text: String): _populate_tree(new_text)
-
-func _on_tree_item_chosen():
-	var selected_item = node_tree.get_selected()
-	if not selected_item: return
-	var meta = selected_item.get_metadata(0)
-	if meta == null: return
-	if meta.has("is_paste"): _create_node(clipboard_config.duplicate(true), last_mouse_position)
-	else: _create_node(GlobalData.node_library[meta["category"]][meta["name"]], last_mouse_position)
-	selected_item.deselect(0); search_popup.hide() 
-
-func _on_graph_edit_popup_request(pos: Vector2):
-	last_mouse_position = (pos + graph_edit.scroll_offset) / graph_edit.zoom
-	_populate_tree("") 
-	search_popup.position = get_viewport().get_mouse_position(); search_popup.popup()
-	search_box.clear(); search_box.grab_focus() 
-
 func _build_action_menu():
 	action_menu.clear()
 	action_menu.add_item("复制 (Copy)", 0); action_menu.add_item("剪切 (Cut)", 1); action_menu.add_separator(); action_menu.add_item("删除 (Delete)", 2)
@@ -370,20 +390,19 @@ func _build_action_menu():
 
 func _on_node_gui_input(event: InputEvent, node: GraphNode):
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
-		for n in graph_edit.get_children():
-			if n is GraphNode: n.selected = (n == node)
+		if not node.selected:
+			for n in graph_edit.get_children():
+				if n is GraphNode: n.selected = (n == node)
 		action_menu.position = get_viewport().get_mouse_position(); action_menu.popup()
 		node.accept_event()
 
 func _on_action_menu_id_pressed(id: int):
-	var selected_node = null
-	for n in graph_edit.get_children():
-		if n is GraphNode and n.selected: selected_node = n; break
-	if not selected_node: return
+	var sel = _get_selected_nodes()
+	if sel.is_empty(): return
 	match id:
-		0: clipboard_config = selected_node.config.duplicate(true)
-		1: clipboard_config = selected_node.config.duplicate(true); _safe_delete_node(selected_node)
-		2: _safe_delete_node(selected_node)
+		0: _copy_selected_nodes(sel)
+		1: _copy_selected_nodes(sel); for n in sel: _safe_delete_node(n)
+		2: for n in sel: _safe_delete_node(n)
 
 func _safe_delete_node(node: GraphNode):
 	var node_name = node.name
@@ -396,3 +415,66 @@ func _on_delete_nodes_request(nodes: Array[StringName]):
 	for node_name in nodes:
 		var node = graph_edit.get_node(NodePath(node_name))
 		if node: _safe_delete_node(node)
+
+func _setup_search_menu():
+	search_popup = PopupPanel.new()
+	var vbox = VBoxContainer.new()
+	search_box = LineEdit.new(); search_box.placeholder_text = "搜索 PyTorch 节点..."
+	search_box.text_changed.connect(_on_search_text_changed)
+	vbox.add_child(search_box)
+	node_tree = Tree.new(); node_tree.custom_minimum_size = Vector2(320, 450); node_tree.hide_root = true 
+	node_tree.item_selected.connect(_on_tree_item_chosen)
+	node_tree.item_activated.connect(_on_tree_item_chosen) 
+	vbox.add_child(node_tree); search_popup.add_child(vbox); add_child(search_popup) 
+
+func _on_graph_edit_popup_request(pos: Vector2):
+	last_mouse_position = (pos + graph_edit.scroll_offset) / graph_edit.zoom
+	_populate_tree("") 
+	search_popup.position = get_viewport().get_mouse_position(); search_popup.popup()
+	search_box.clear(); search_box.grab_focus() 
+
+func _populate_tree(filter_text: String):
+	node_tree.clear()
+	var root = node_tree.create_item()
+	if filter_text == "" and not clipboard_nodes.is_empty():
+		var paste_item = node_tree.create_item(root)
+		paste_item.set_text(0, "📋 粘贴 " + str(clipboard_nodes.size()) + " 个节点") 
+		paste_item.set_metadata(0, {"is_paste": true})
+		paste_item.set_custom_color(0, Color(1, 0.8, 0.2))
+		
+	filter_text = filter_text.to_lower()
+	for category in GlobalData.node_library.keys():
+		var cat_item = node_tree.create_item(root)
+		cat_item.set_text(0, category)
+		cat_item.set_selectable(0, false)
+		cat_item.set_custom_bg_color(0, Color(0.15, 0.15, 0.15))
+		var has_visible_children = false
+		for node_name in GlobalData.node_library[category].keys():
+			if filter_text == "" or filter_text in node_name.to_lower() or filter_text in category.to_lower():
+				var item = node_tree.create_item(cat_item)
+				item.set_text(0, node_name)
+				item.set_metadata(0, {"category": category, "name": node_name})
+				item.set_tooltip_text(0, "[ " + node_name + " ]\n" + GlobalData.node_library[category][node_name].get("description", "暂无说明文档"))
+				has_visible_children = true
+		if not has_visible_children: 
+			cat_item.free()
+		else:
+			cat_item.collapsed = (filter_text == "")
+
+func _on_search_text_changed(new_text: String): _populate_tree(new_text)
+
+func _on_tree_item_chosen():
+	var selected_item = node_tree.get_selected()
+	if not selected_item: return
+	var meta = selected_item.get_metadata(0)
+	if meta == null: return
+	
+	if meta.has("is_paste"): 
+		var safe_mouse_pos = (last_mouse_position * graph_edit.zoom) - graph_edit.scroll_offset
+		graph_edit.warp_mouse(safe_mouse_pos)
+		_paste_nodes_from_clipboard()
+	else: 
+		_create_node(GlobalData.node_library[meta["category"]][meta["name"]], last_mouse_position)
+		
+	selected_item.deselect(0)
+	search_popup.hide()

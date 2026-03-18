@@ -23,28 +23,33 @@ offset_bottom = 40.0
 anchors_preset = 1
 anchor_left = 1.0
 anchor_right = 1.0
-offset_left = -404.0
+offset_left = -261.0
 offset_bottom = 30.0
 grow_horizontal = 0
 size_flags_horizontal = 8
 
 [node name="SaveBtn" type="Button" parent="UILayer/TopBar" unique_id=1474990007]
 layout_mode = 2
-text = "💾 保存项目"
+theme_override_font_sizes/font_size = 40
+text = "SAVE"
 
 [node name="LoadBtn" type="Button" parent="UILayer/TopBar" unique_id=440118653]
 layout_mode = 2
-text = "📂 读取项目"
+theme_override_font_sizes/font_size = 40
+text = "LOAD"
 
 [node name="ImportBtn" type="Button" parent="UILayer/TopBar" unique_id=250315307]
 layout_mode = 2
-text = "📦 导入模型"
+theme_override_font_sizes/font_size = 40
+text = "IMPORT"
 
 [node name="ExportBtn" type="Button" parent="UILayer/TopBar" unique_id=657883403]
 layout_mode = 2
-text = "🚀 导出代码"
+theme_override_font_sizes/font_size = 40
+text = "EXPORT"
 
 [node name="ButtomBar" type="HBoxContainer" parent="UILayer" unique_id=1903604236]
+custom_minimum_size = Vector2(10, 0)
 anchors_preset = 3
 anchor_left = 1.0
 anchor_top = 1.0
@@ -54,22 +59,25 @@ offset_left = -146.0
 offset_top = -27.0
 grow_horizontal = 0
 grow_vertical = 0
-size_flags_horizontal = 8
+size_flags_horizontal = 4
 
 [node name="model" type="Button" parent="UILayer/ButtomBar" unique_id=2039506685]
 layout_mode = 2
+theme_override_font_sizes/font_size = 40
 toggle_mode = true
 button_group = ExtResource("2_1akdb")
 text = "model"
 
 [node name="train" type="Button" parent="UILayer/ButtomBar" unique_id=1562484589]
 layout_mode = 2
+theme_override_font_sizes/font_size = 40
 toggle_mode = true
 button_group = ExtResource("2_1akdb")
 text = "train"
 
 [node name="test" type="Button" parent="UILayer/ButtomBar" unique_id=698685875]
 layout_mode = 2
+theme_override_font_sizes/font_size = 40
 toggle_mode = true
 button_group = ExtResource("2_1akdb")
 text = "test"
