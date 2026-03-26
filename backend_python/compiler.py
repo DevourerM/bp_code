@@ -7,15 +7,12 @@ def format_param(val_str, p_type):
     """将前端传来的参数安全、智能地格式化为合法的 Python 代码"""
     val_str = str(val_str).strip()
     
-    if val_str == "None":
-        return "None"
+    if val_str == "None": return "None"
         
     # 1. 强转整数 (修复: dilation=1.0 -> 1)
     if p_type == "int":
-        try:
-            return str(int(float(val_str)))
-        except ValueError:
-            return val_str
+        try: return str(int(float(val_str)))
+        except ValueError: return val_str
             
     # 2. 浮点数
     elif p_type == "float":
@@ -27,36 +24,32 @@ def format_param(val_str, p_type):
         
     # 4. 元组
     elif p_type == "tuple":
-        if not val_str.startswith("("): 
-            val_str = f"({val_str})"
+        if not val_str.startswith("("): val_str = f"({val_str})"
         return val_str
         
     # 5. 智能字符串 (核心修复点)
     elif p_type == "string":
-        # 如果是纯数字（如 "3"），说明它是被误判为 string 的必填 int 参数（如 in_channels）
-        if val_str.isdigit():
-            return val_str
+        # 如果是纯数字，说明它是被误判为 string 的必填 int 参数（如 in_channels）
+        if val_str.isdigit(): return val_str
             
-        # 如果是浮点数格式（如 "3.0"），且本质是整数，转成整数 "3"
+        # 如果是浮点数格式，且本质是整数，转成整数
         try:
             f_val = float(val_str)
-            if f_val.is_integer():
-                return str(int(f_val))
+            if f_val.is_integer(): return str(int(f_val))
             return val_str
         except ValueError:
             pass
             
-        # 如果是一个元组或列表格式（如 "(3, 3)" 或 "[1, 2]"）
+        # 针对列表/元组格式
         if (val_str.startswith('(') and val_str.endswith(')')) or \
            (val_str.startswith('[') and val_str.endswith(']')):
             return val_str
             
-        # 如果前端传过来已经自带引号了，直接返回
+        # 防止重复包裹引号
         if (val_str.startswith("'") and val_str.endswith("'")) or \
            (val_str.startswith('"') and val_str.endswith('"')):
             return val_str
             
-        # 真正的纯文本字符串（如 padding_mode='zeros'），为其加上引号
         return f"'{val_str}'"
 
     return val_str
@@ -67,7 +60,7 @@ def clean_name(name):
 
 
 # ==========================================
-# 核心网络代码生成器
+# 核心网络代码生成器 (V1.4 支持高斯分布等智能权重初始化)
 # ==========================================
 def generate_pytorch_code(project_data, main_class_name="MyNetwork"):
     model_graphs = project_data
@@ -75,6 +68,7 @@ def generate_pytorch_code(project_data, main_class_name="MyNetwork"):
     nodes = main_graph.get("nodes", {})
     connections = main_graph.get("connections", [])
 
+    # 1. 语义化重命名映射逻辑
     node_var_map = {}
     type_counters = {}
 
@@ -82,20 +76,41 @@ def generate_pytorch_code(project_data, main_class_name="MyNetwork"):
         ntype = info.get("type", "Unknown")
         safe_type = clean_name(ntype)
         
-        if safe_type == "Data_Input":
-            base_name = "input"
-        elif safe_type == "Data_Output":
-            base_name = "output"
-        else:
-            base_name = safe_type
+        if safe_type == "Data_Input": base_name = "input"
+        elif safe_type == "Data_Output": base_name = "output"
+        else: base_name = safe_type
 
-        if base_name not in type_counters:
-            type_counters[base_name] = 1
-        else:
-            type_counters[base_name] += 1
+        if base_name not in type_counters: type_counters[base_name] = 1
+        else: type_counters[base_name] += 1
             
         node_var_map[nid] = f"{base_name}_{type_counters[base_name]}"
 
+    # ==========================================
+    # 【核心拦截器】：解析并拦截权重初始化节点的参数与连线
+    # ==========================================
+    init_methods = {} # 记录: Weight Init 节点ID -> {方法名, mean, std}
+    for nid, info in nodes.items():
+        if info.get("type") == "Weight Init":
+            # 获取前端配置 (处理中文说明后缀)
+            method_val = info.get("params", {}).get("method", {}).get("value", "kaiming_normal_")
+            mean_val = info.get("params", {}).get("mean", {}).get("value", "0.0")
+            std_val = info.get("params", {}).get("std", {}).get("value", "1.0")
+            
+            # 清理类似 "normal_ (高斯分布)" 这样的名称，只保留 "normal_"
+            method_clean = method_val.split()[0] 
+            
+            init_methods[nid] = {
+                "method": method_clean,
+                "mean": mean_val,
+                "std": std_val
+            }
+
+    layer_inits = {} # 记录: 被连入的层节点ID -> 要使用的初始化配置
+    for conn in connections:
+        if conn["from"] in init_methods:
+            layer_inits[conn["to"]] = init_methods[conn["from"]]
+
+    # 2. 拓扑排序 (Topological Sort)
     in_degree = {nid: 0 for nid in nodes}
     adj_list = {nid: [] for nid in nodes}
     for conn in connections:
@@ -131,6 +146,10 @@ def generate_pytorch_code(project_data, main_class_name="MyNetwork"):
         params = info.get("params", {})
         readable_name = node_var_map[nid]  
         
+        # 拦截：纯配置节点不参与 forward
+        if ntype == "Weight Init":
+            continue
+            
         args = []
         for k, v in params.items():
             val = v.get("value", v.get("default", ""))
@@ -175,6 +194,9 @@ def generate_pytorch_code(project_data, main_class_name="MyNetwork"):
             in_ports = {}
             for conn in connections:
                 if conn["to"] == nid:
+                    # 拦截：忽略来自 Weight Init 的连线，它不参与前向计算流动
+                    if nodes[conn["from"]].get("type") == "Weight Init":
+                        continue
                     in_ports[conn["to_port"]] = out_vars[conn["from"]][conn["from_port"]]
             
             in_args = [in_ports[i] for i in sorted(in_ports.keys())]
@@ -198,6 +220,29 @@ def generate_pytorch_code(project_data, main_class_name="MyNetwork"):
     else:
         forward_lines.append(f"        return {', '.join(return_vars)}")
 
+    # ==========================================
+    # 【新增逻辑】：智能组装初始化代码函数
+    # ==========================================
+    init_weight_lines = []
+    for target_nid, cfg in layer_inits.items():
+        if target_nid in node_var_map:
+            fn_name = f"fn_{node_var_map[target_nid]}"
+            method = cfg["method"]
+            
+            # 针对高斯分布(normal_)的特殊处理：传入 mean 和 std
+            if method == "normal_":
+                init_weight_lines.append(f"        nn.init.normal_(self.{fn_name}.weight, mean={cfg['mean']}, std={cfg['std']})")
+            else:
+                # 其他方法使用默认签名
+                init_weight_lines.append(f"        nn.init.{method}(self.{fn_name}.weight)")
+                
+            # 安全判定：如果有 bias 参数，一律默认初始化为 0
+            init_weight_lines.append(f"        if getattr(self.{fn_name}, 'bias', None) is not None:")
+            init_weight_lines.append(f"            nn.init.zeros_(self.{fn_name}.bias)")
+
+    # ==========================================
+    # 3. 组装最终完整的类结构文本
+    # ==========================================
     code = f"import torch\nimport torch.nn as nn\n\n"
     code += f"class {main_class_name}(nn.Module):\n"
     code += "    def __init__(self):\n"
@@ -208,9 +253,19 @@ def generate_pytorch_code(project_data, main_class_name="MyNetwork"):
     else:
         code += "        pass\n"
         
+    # 若存在初始化连线，在 __init__ 的末尾自动执行
+    if init_weight_lines:
+        code += "\n        # 执行网络权重初始化\n"
+        code += "        self._initialize_weights()\n"
+        
     code += "\n"
     code += f"    def forward({', '.join(forward_args)}):\n"
     code += "\n".join(forward_lines) + "\n"
+
+    # 将具体的初始化函数附在类定义末尾，保持代码极其整洁
+    if init_weight_lines:
+        code += "\n    def _initialize_weights(self):\n"
+        code += "\n".join(init_weight_lines) + "\n"
 
     return code
 

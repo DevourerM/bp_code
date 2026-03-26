@@ -1,165 +1,202 @@
 import torch
 import torch.nn as nn
 import ast
-import json
+import traceback
 
-def parse_val(val_str, expected_type):
-    if val_str == "" or val_str == "None": return None
-    try:
-        if expected_type == "tuple": return ast.literal_eval(val_str)
-        elif expected_type == "int": return int(float(val_str))
-        elif expected_type == "float": return float(val_str)
-        elif expected_type == "bool": return str(val_str).lower() == "true"
-    except: pass
-    try: return ast.literal_eval(val_str)
-    except: return val_str
-
+# ==========================================
+# 核心引擎：实时张量形状与维度推导 
+# ==========================================
 def infer_graph_shapes(project_data):
-    global_shapes = {}
-    global_updates = {}
-    _TENSOR_CACHE = {}
-    visited_graphs = set() # 【新增】：记录编译过的图，防止死循环
+    main_graph = project_data.get("main", {"nodes": {}, "connections": []})
+    nodes = main_graph.get("nodes", {})
+    connections = main_graph.get("connections", [])
 
-    def infer_subgraph(graph_id, parent_inputs=None):
-        if graph_id not in project_data: return None
-        visited_graphs.add(graph_id)
-            
-        graph = project_data[graph_id]
-        nodes = graph.get("nodes", {})
-        connections = graph.get("connections", [])
-        
-        tensor_cache = {}
-        incoming_tensors = {nid: {} for nid in nodes.keys()}
-        required_inputs = {}
-        
-        data_input_nodes = [nid for nid, info in nodes.items() if info["type"] == "Data Input"]
-        
-        def sort_key(nid):
-            nid_str = str(nid)
-            if nid_str.startswith("input") and nid_str[5:].isdigit():
-                return int(nid_str[5:])
-            return nodes[nid].get("pos_y", 0)
-            
-        data_input_nodes.sort(key=sort_key)
-        
-        for i, nid in enumerate(data_input_nodes):
-            # 【修复核心】：如果外层馈送了数据，优先使用外层数据；否则使用子图节点的局部默认值
-            if parent_inputs is not None and i < len(parent_inputs) and parent_inputs[i] is not None and not isinstance(parent_inputs[i], str):
-                tensor_cache[nid] = parent_inputs[i]
-            else:
-                p = nodes[nid].get("params", {})
-                sh_val = p.get("shape", {}).get("value", "(1, 3, 224, 224)")
-                md_val = p.get("mode", {}).get("value", "randn")
-                sh = parse_val(sh_val, "tuple")
-                try:
-                    if md_val == "ones": tensor_cache[nid] = torch.ones(*sh)
-                    elif md_val == "zeros": tensor_cache[nid] = torch.zeros(*sh)
-                    else: tensor_cache[nid] = torch.randn(*sh)
-                except:
-                    tensor_cache[nid] = "输入错误"
-        
-        for nid, info in nodes.items():
-            ins = info.get("inputs", [])
-            required_inputs[nid] = len(ins) if ins else (1 if info.get("main_in") else 0)
-            
-        pending_conns = connections.copy()
-        processed_count = -1
-        
-        for _ in range(100):
-            if len(pending_conns) == processed_count: break
-            processed_count = len(pending_conns)
-            remaining_conns = []
-            
-            for conn in pending_conns:
-                f, t, tp = conn["from"], conn["to"], conn.get("to_port", 0)
-                if f not in tensor_cache:
-                    remaining_conns.append(conn)
-                    continue
-                    
-                in_t = tensor_cache[f]
-                conn_key = f"{f}->{t}"
-                global_shapes[conn_key] = str(list(in_t.shape)) if not isinstance(in_t, str) else in_t
-                incoming_tensors[t][tp] = in_t
-                
-            for nid, info in nodes.items():
-                if nid in tensor_cache: continue
-                req = required_inputs[nid]
-                has_t = incoming_tensors[nid]
-                
-                # 【修复核心】：允许 Group 节点在没有插满线时部分执行！
-                is_ready = False
-                if req == 0: is_ready = True
-                elif len(has_t) == req: is_ready = True
-                elif info["type"] in ["Group", "Loop"]: is_ready = True
-                
-                if is_ready:
-                    l_type = info["type"]
-                    p_raw = info.get("params", {})
-                    p = {k: parse_val(v.get("value", ""), v.get("type", "string")) for k,v in p_raw.items()}
-                    
-                    try:
-                        overridden = {}
-                        main_t = has_t.get(0)
-                        
-                        if l_type == "Group":
-                            sub_inputs = [has_t.get(i) for i in range(req)]
-                            sub_out = infer_subgraph(nid, parent_inputs=sub_inputs)
-                            out_t = sub_out if sub_out is not None else (main_t if main_t is not None else "等待...")
-                            
-                        elif l_type == "Loop":
-                            iters = p.get("iterations", 3)
-                            curr_t = main_t
-                            for step in range(iters):
-                                sub_out = infer_subgraph(nid, parent_inputs=[curr_t])
-                                if sub_out is not None: curr_t = sub_out
-                            out_t = curr_t
-                            
-                        elif l_type == "Value Display":
-                            idx = p.get("index", (0,))
-                            try: overridden["result"] = str(round(main_t[idx].item(), 6))
-                            except: overridden["result"] = "越界错误"
-                            out_t = main_t
-                            
-                        elif hasattr(nn, l_type):
-                            auto_k = "in_channels" if "Conv" in l_type else ("num_features" if "BatchNorm" in l_type else ("in_features" if "Linear" in l_type else None))
-                            if auto_k and len(main_t.shape) >= (2 if "Conv" in l_type else 1):
-                                dim_idx = 1 if "Conv" in l_type or "BatchNorm" in l_type else -1
-                                p[auto_k] = main_t.shape[dim_idx]
-                                overridden[auto_k] = str(p[auto_k])
-                            
-                            layer = getattr(nn, l_type)(**p)
-                            out_t = layer(main_t)
-                            
-                        elif l_type == "Concat":
-                            out_t = torch.cat((main_t, has_t.get(1)), dim=p.get("dim", 1))
-                        elif l_type == "Math":
-                            op = p.get("op", "add")
-                            if "add" in op: out_t = main_t + has_t.get(1)
-                            elif "sub" in op: out_t = main_t - has_t.get(1)
-                            elif "mul" in op: out_t = main_t * has_t.get(1)
-                            elif "matmul" in op: out_t = torch.matmul(main_t, has_t.get(1))
-                        else:
-                            out_t = main_t
-                            
-                        if overridden: global_updates[nid] = overridden
-                        tensor_cache[nid] = out_t
-                        
-                    except Exception as e:
-                        tensor_cache[nid] = "等待参数..."
-                        
-            pending_conns = remaining_conns
-            
-        data_out_nodes = [nid for nid, info in nodes.items() if info["type"] == "Data Output"]
-        if data_out_nodes and data_out_nodes[0] in tensor_cache:
-            return tensor_cache[data_out_nodes[0]]
-        return None
+    # 1. 拓扑排序 (保证推导顺序从前到后)
+    in_degree = {nid: 0 for nid in nodes}
+    adj_list = {nid: [] for nid in nodes}
+    for conn in connections:
+        from_n = conn["from"]
+        to_n = conn["to"]
+        if from_n in nodes and to_n in nodes:
+            adj_list[from_n].append(conn)
+            in_degree[to_n] += 1
 
-    # 1. 优先编译主空间
-    infer_subgraph("main")
-    
-    # 2. 【修复核心】：强制编译所有没被 main 激活的子空间，确保你在里层连线时能独立查看结果！
-    for gid in list(project_data.keys()):
-        if gid not in visited_graphs:
-            infer_subgraph(gid)
+    queue = [nid for nid, deg in in_degree.items() if deg == 0]
+    topo_order = []
+    while queue:
+        curr = queue.pop(0)
+        topo_order.append(curr)
+        for conn in adj_list[curr]:
+            to_n = conn["to"]
+            in_degree[to_n] -= 1
+            if in_degree[to_n] == 0:
+                queue.append(to_n)
+
+    out_vars = {}        # 记录每个节点的输出 Tensor
+    shape_results = {}   # 记录前端需要展示的形状字符串
+    updated_params = {}  # 记录需要自动填入前端的参数字典
+
+    # 2. 依次执行节点推导
+    for nid in topo_order:
+        info = nodes[nid]
+        ntype = info.get("type", "")
+        params = info.get("params", {})
+
+        # 【独立处理】：配置连线的专属 UI 标签
+        if ntype in ["Weight Init", "Comment", "Inference Config", "Training Config", "Dataset Loader", "Target Loader"]:
+            for conn in connections:
+                if conn["from"] == nid:
+                    conn_key = f"{conn['from']}->{conn['to']}"
+                    if ntype == "Weight Init":
+                        shape_results[conn_key] = "⚙️ 初始化"
+                    else:
+                        shape_results[conn_key] = "⚙️ 配置线"
+            continue
+
+        # 收集当前计算层的所有有效输入 Tensor
+        in_ports = {}
+        for conn in connections:
+            if conn["to"] == nid:
+                from_type = nodes.get(conn["from"], {}).get("type", "")
+                if from_type in ["Weight Init", "Comment"]:
+                    continue # 物理隔离配置线
+                    
+                if conn["from"] in out_vars and conn["from_port"] in out_vars[conn["from"]]:
+                    in_ports[conn["to_port"]] = out_vars[conn["from"]][conn["from_port"]]
+
+        in_args = [in_ports[i] for i in sorted(in_ports.keys())]
+
+        try:
+            # ---------------------------------------------
+            # 模拟执行与形状推演
+            # ---------------------------------------------
+            if ntype == "Data Input":
+                shape_str = params.get("shape", {}).get("value", "(1, 3, 224, 224)")
+                shape_tuple = ast.literal_eval(shape_str) if isinstance(shape_str, str) else shape_str
+                out_vars[nid] = {0: torch.zeros(shape_tuple)}
+
+            elif ntype == "Data Output" or ntype == "Group":
+                if in_args: out_vars[nid] = {0: in_args[0]}
             
-    return {"shapes": global_shapes, "updated_params": global_updates}
+            # --- 张量形态类 ---
+            elif ntype == "Reshape":
+                shape_str = params.get("shape", {}).get("value", "(1, -1)")
+                s = ast.literal_eval(shape_str) if isinstance(shape_str, str) else shape_str
+                out_vars[nid] = {0: in_args[0].view(s)}
+            elif ntype == "Permute":
+                dims_str = params.get("dims", {}).get("value", "(0, 2, 1, 3)")
+                d = ast.literal_eval(dims_str) if isinstance(dims_str, str) else dims_str
+                out_vars[nid] = {0: in_args[0].permute(d)}
+            elif ntype == "Squeeze":
+                dim_str = str(params.get("dim", {}).get("value", "None"))
+                if dim_str != "None" and dim_str != "": out_vars[nid] = {0: in_args[0].squeeze(int(dim_str))}
+                else: out_vars[nid] = {0: in_args[0].squeeze()}
+            elif ntype == "Unsqueeze":
+                dim = int(float(params.get("dim", {}).get("value", "1")))
+                out_vars[nid] = {0: in_args[0].unsqueeze(dim)}
+            elif ntype == "Expand":
+                sizes_str = params.get("sizes", {}).get("value", "(1, 8, 8)")
+                s = ast.literal_eval(sizes_str) if isinstance(sizes_str, str) else sizes_str
+                out_vars[nid] = {0: in_args[0].expand(s)}
+
+            # --- 数学运算类 ---
+            elif ntype == "Binary Math":
+                op = params.get("op", {}).get("value", "matmul (@)")
+                if not in_args or len(in_args) < 2: continue 
+                a, b = in_args[0], in_args[1]
+                if "add" in op: out_vars[nid] = {0: a + b}
+                elif "sub" in op: out_vars[nid] = {0: a - b}
+                elif "mul" in op: out_vars[nid] = {0: a * b}
+                elif "div" in op: out_vars[nid] = {0: a / b}
+                elif "matmul" in op: out_vars[nid] = {0: torch.matmul(a, b)}
+            elif ntype == "Concat":
+                dim = int(float(params.get("dim", {}).get("value", "-1")))
+                out_vars[nid] = {0: torch.cat(in_args, dim=dim)}
+            
+            # --- PyTorch 原生网络层 ---
+            elif hasattr(nn, ntype):
+                kwargs = {}
+                for k, v in params.items():
+                    val = v.get("value", v.get("default", ""))
+                    if val == "" or str(val) == "None": continue
+                    
+                    # 强转所有冒充 float 的 int 参数
+                    if isinstance(val, float) and val.is_integer():
+                        val = int(val) 
+                    elif isinstance(val, str):
+                        try:
+                            parsed_val = ast.literal_eval(val)
+                            if isinstance(parsed_val, float) and parsed_val.is_integer():
+                                val = int(parsed_val)
+                            else:
+                                val = parsed_val
+                        except Exception:
+                            pass 
+                            
+                    kwargs[k] = val
+                
+                # 自动嗅探与智能填充 In_Channels 等
+                if in_args:
+                    in_tensor_shape = in_args[0].shape
+                    
+                    if "Conv" in ntype and len(in_tensor_shape) >= 2:
+                        auto_in_channels = in_tensor_shape[1]
+                        kwargs["in_channels"] = auto_in_channels
+                        if nid not in updated_params: updated_params[nid] = {}
+                        updated_params[nid]["in_channels"] = str(auto_in_channels)
+                        
+                    elif "Linear" in ntype and len(in_tensor_shape) >= 1:
+                        auto_in_features = in_tensor_shape[-1]
+                        kwargs["in_features"] = auto_in_features
+                        if nid not in updated_params: updated_params[nid] = {}
+                        updated_params[nid]["in_features"] = str(auto_in_features)
+                        
+                    elif "BatchNorm" in ntype and len(in_tensor_shape) >= 2:
+                        auto_num_features = in_tensor_shape[1]
+                        kwargs["num_features"] = auto_num_features
+                        if nid not in updated_params: updated_params[nid] = {}
+                        updated_params[nid]["num_features"] = str(auto_num_features)
+                            
+                # 实例化网络层
+                layer = getattr(nn, ntype)(**kwargs)
+                out = layer(*in_args)
+                out_vars[nid] = {0: out}
+
+            # 成功！给当前节点的【输出线】标上正确的形状
+            for conn in connections:
+                if conn["from"] == nid:
+                    port = conn["from_port"]
+                    if port in out_vars[nid]:
+                        tensor = out_vars[nid][port]
+                        conn_key = f"{conn['from']}->{conn['to']}"
+                        shape_results[conn_key] = str(tuple(tensor.shape))
+
+        # ==========================================
+        # 【核心逻辑修正】：报错只影响从当前节点连出去的线！
+        # ==========================================
+        except TypeError as e:
+            err_str = str(e)
+            for conn in connections:
+                # 【修改点】：不再是 conn["to"]，而是只找连出去的线 conn["from"]
+                if conn["from"] == nid:
+                    conn_key = f"{conn['from']}->{conn['to']}"
+                    if "missing" in err_str and "required" in err_str:
+                        shape_results[conn_key] = "⏳ 等待输入必填参数..."
+                    else:
+                        shape_results[conn_key] = f"❌ 参数错误: 请检查输入"
+            
+            if not ("missing" in err_str and "required" in err_str):
+                print(f"节点 {nid} ({ntype}) 推导失败: {e}")
+
+        except Exception as e:
+            for conn in connections:
+                # 同理：报错只污染下家，绝不反咬上家！
+                if conn["from"] == nid:
+                    conn_key = f"{conn['from']}->{conn['to']}"
+                    shape_results[conn_key] = f"❌ 维度冲突: {type(e).__name__}"
+            print(f"节点 {nid} ({ntype}) 推导失败: {e}")
+
+    return {
+        "shapes": shape_results,
+        "updated_params": updated_params
+    }

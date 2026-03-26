@@ -1,4 +1,5 @@
 # system_nodes.py
+
 SYSTEM_NODES = {
     "System (系统节点)": {
         "Data Input": {
@@ -162,6 +163,20 @@ SYSTEM_NODES = {
                 {"name": "save_path", "type": "string", "default": "./weights/model.pth"}
             ],
             "description": "全局训练超参数，串联在数据流中。"
+        },
+        
+        "Weight Init (权重初始化)": {
+            "name": "Weight Init", "inputs": [], "main_out": "init",
+            "params": [
+                {"name": "method", "type": "enum", "options": [
+                    "kaiming_normal_", "kaiming_uniform_",
+                    "xavier_normal_", "xavier_uniform_",
+                    "normal_ (高斯分布)", "uniform_", "zeros_", "ones_"
+                ], "default": "kaiming_normal_"},
+                {"name": "mean", "type": "float", "default": 0.0},
+                {"name": "std", "type": "float", "default": 1.0}
+            ],
+            "description": "将此节点连入带有权重参数的层(如 Conv/Linear) 的 init 端口。高斯分布需要配置 mean 和 std 参数。"
         }
     },
 

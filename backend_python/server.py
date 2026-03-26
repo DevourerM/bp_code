@@ -1,8 +1,10 @@
 import os
 import sys
 
+# ==========================================
+# 【环境补丁】针对 PyInstaller 打包环境的 DLL 加载修复
+# ==========================================
 if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-    # 针对 PyInstaller 的运行环境修复
     os.environ['PATH'] = sys._MEIPASS + os.pathsep + os.environ['PATH']
     try:
         os.add_dll_directory(sys._MEIPASS)
@@ -21,6 +23,9 @@ import torch.optim as optim
 from shape_engine import infer_graph_shapes
 from system_nodes import SYSTEM_NODES
 
+# ==========================================
+# 核心功能：扫描 PyTorch 库并生成动态节点字典
+# ==========================================
 def generate_torch_library():
     print("正在扫描 PyTorch 库...")
     library = SYSTEM_NODES.copy()
@@ -32,9 +37,7 @@ def generate_torch_library():
         "Optimizers (优化器)": {}, "Utilities (其他工具)": {}
     })
 
-    # ==========================================
     # 1. 扫描网络层与 Loss 函数 (torch.nn)
-    # ==========================================
     for name, obj in inspect.getmembers(nn):
         if inspect.isclass(obj) and issubclass(obj, nn.Module) and obj != nn.Module:
             category = "Utilities (其他工具)"
@@ -43,6 +46,7 @@ def generate_torch_library():
             elif name in ["ReLU", "Sigmoid", "Tanh", "LeakyReLU", "Softmax", "GELU"]: category = "Activations (激活函数)"
             elif "Loss" in name: category = "Losses (损失函数)"
 
+            # 获取官方文档作为节点描述
             doc_string = inspect.getdoc(obj)
             short_doc = "暂无说明文档"
             if doc_string:
@@ -63,19 +67,23 @@ def generate_torch_library():
                     params.append({"name": p_name, "type": p_type, "default": p_default})
             except ValueError: pass
 
-            # 如果是 Loss 函数，强制设置为双输入 (preds, targets)
+            # 【核心逻辑】：如果是带有权重的层(Conv/Linear)，为其增加 init 连线端口
             is_loss = (category == "Losses (损失函数)")
+            is_trainable_layer = category in ["Convolutions (卷积层)", "Linear (全连接层)"]
+            
+            node_inputs = ["preds", "targets"] if is_loss else ["in"]
+            if is_trainable_layer:
+                node_inputs.append("init") # 为模型层暴露出权重初始化输入端
+
             library[category][name] = {
                 "name": name,
-                "inputs": ["preds", "targets"] if is_loss else ["in"],
+                "inputs": node_inputs,
                 "main_out": "loss" if is_loss else "out",
                 "params": params,
                 "description": short_doc
             }
 
-    # ==========================================
     # 2. 扫描优化器 (torch.optim)
-    # ==========================================
     for name, obj in inspect.getmembers(optim):
         if inspect.isclass(obj) and issubclass(obj, optim.Optimizer) and obj != optim.Optimizer:
             params = []
@@ -106,7 +114,7 @@ def generate_torch_library():
 TORCH_NODE_LIBRARY = generate_torch_library()
 
 # ==========================================
-# 核心 WebSocket 通讯与指令分发中心
+# WebSocket 通讯与前端指令分发中心
 # ==========================================
 async def handle_client(websocket):
     print("Godot 客户端已连接！")
@@ -123,7 +131,7 @@ async def handle_client(websocket):
                 shape_results = infer_graph_shapes(json.loads(graph_json_str))
                 await websocket.send(json.dumps({"type": "SHAPE_RESULTS", "data": shape_results}))
                 
-            # 3. 导出模型专属代码 (.py) [来自 model_editor]
+            # 3. 导出模型专属代码 (.py) 
             elif message.startswith("EXPORT_PY:"):
                 req = json.loads(message.replace("EXPORT_PY:", ""))
                 try:
@@ -135,7 +143,7 @@ async def handle_client(websocket):
                 except Exception as e:
                     await websocket.send(json.dumps({"type": "EXPORT_ERROR", "msg": str(e)}))
                     
-            # 4. 导出训练闭环脚本代码 (train.py) [来自 train_editor]
+            # 4. 导出训练闭环脚本代码 (train.py) 
             elif message.startswith("EXPORT_TRAIN_PY:"):
                 req = json.loads(message.replace("EXPORT_TRAIN_PY:", ""))
                 try:
@@ -147,7 +155,7 @@ async def handle_client(websocket):
                 except Exception as e:
                     await websocket.send(json.dumps({"type": "EXPORT_ERROR", "msg": str(e)}))
                     
-            # 5. 导出推理部署封装类 (test.py) [来自 test_editor]
+            # 5. 导出推理部署封装类 (test.py) 
             elif message.startswith("EXPORT_TEST_PY:"):
                 req = json.loads(message.replace("EXPORT_TEST_PY:", ""))
                 try:
