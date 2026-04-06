@@ -53,40 +53,50 @@ func _rebuild_ui():
 	reset_size()
 	self.title = config.get("name", "Unknown Function")
 	
-	# === 动态生成引脚 ===
+	# ==========================================
+	# 动态获取输入/输出端口数量
+	# ==========================================
 	var ins = config.get("inputs", []).duplicate()
-	if config.name == "Group":
-		ins.clear()
-		var count = 1
-		if config.has("params"):
-			for p in config.params:
-				if p.name == "input_count":
-					count = int(p.get("value", p.get("default", 1)))
-		for i in range(count):
-			ins.append("input" + str(i))
-	elif ins.is_empty() and config.get("main_in", "") != "":
-		ins.append(config.get("main_in", ""))
-		
-	var out_str = config.get("main_out", "")
-	var has_out = out_str != ""
-	var max_io = max(ins.size(), 1 if has_out else 0)
+	var outs = []
+	if config.get("main_out", "") != "": outs.append(config.get("main_out", ""))
 	
+	if config.has("params"):
+		for p in config.params:
+			if p.name == "input_count":
+				var count = int(float(p.get("value", p.get("default", 1))))
+				ins.clear()
+				for i in range(count): ins.append("in" + str(i))
+			if p.name == "output_count":
+				var count = int(float(p.get("value", p.get("default", 1))))
+				outs.clear()
+				for i in range(count): outs.append("out" + str(i))
+				
+	var max_io = max(ins.size(), outs.size())
+	
+	# 渲染动态引脚 UI
 	for i in range(max_io):
 		var io_container = HBoxContainer.new()
 		io_container.add_theme_constant_override("separation", 16)
-		if i < ins.size():
-			var in_label = Label.new(); in_label.text = ins[i]
+		
+		var enable_in = i < ins.size()
+		var enable_out = i < outs.size()
+		
+		if enable_in:
+			var in_label = Label.new(); in_label.text = str(ins[i])
 			io_container.add_child(in_label)
+			
 		var spacer = Control.new(); spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		io_container.add_child(spacer)
-		if i == 0 and has_out:
-			var out_label = Label.new(); out_label.text = out_str
+		
+		if enable_out:
+			var out_label = Label.new(); out_label.text = str(outs[i])
 			out_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 			io_container.add_child(out_label)
+			
 		add_child(io_container)
-		set_slot(i, i < ins.size(), 0, Color.AQUA, i == 0 and has_out, 0, Color.AQUA)
+		set_slot(i, enable_in, 0, Color.AQUA, enable_out, 0, Color(0.2, 0.5, 1.0))
 
-	# === 生成参数 ===
+	# === 生成参数控制面板 ===
 	if config.has("params"):
 		for p in config["params"]:
 			var param_container = HBoxContainer.new()
@@ -113,13 +123,16 @@ func _rebuild_ui():
 				
 			elif p.type == "int" or p.type == "float":
 				var sb = SpinBox.new(); sb.allow_greater = true
-				if p.name == "input_count": sb.min_value = 1 
+				if p.name in ["input_count", "output_count"]: sb.min_value = 0 
 				sb.step = 1 if p.type == "int" else 0.01
-				sb.value = float(p.get("value", p.get("default", 1 if p.name == "input_count" else 0)))
+				var def_val = 1 if p.name in ["input_count", "output_count"] else 0
+				sb.value = float(p.get("value", p.get("default", def_val)))
 				
 				sb.value_changed.connect(func(_v): 
 					p["value"] = _v
-					if p.name == "input_count": _rebuild_ui()
+					# 核心机制：一旦改变数值，立刻延迟重建 UI 来更新插槽数量！
+					if p.name in ["input_count", "output_count"]: 
+						call_deferred("_rebuild_ui")
 					if not _is_updating_auto: parameter_changed.emit()
 				)
 				ctrl = sb
@@ -138,15 +151,6 @@ func _rebuild_ui():
 			ui_controls[p.name] = ctrl
 			add_child(param_container)
 			set_slot(get_child_count()-1, true, 1, Color.LAWN_GREEN, false, 0, Color.WHITE)
-
-	# === 子图按钮 ===
-	if config.name in ["Group", "Loop"]:
-		var btn = Button.new()
-		btn.text = "进入子层级 [Enter]"
-		btn.add_theme_color_override("font_color", Color(1, 0.8, 0.2))
-		btn.pressed.connect(func(): enter_subgraph_requested.emit(self.name))
-		add_child(btn)
-		set_slot(get_child_count()-1, false, 0, Color.WHITE, false, 0, Color.WHITE)
 
 func get_current_params() -> Dictionary:
 	var current_params = {}
@@ -181,38 +185,12 @@ func reset_auto_params():
 		if c is OptionButton: c.disabled = false
 		c.modulate = Color.WHITE
 
-# ==========================================
-# 弹出式多行代码编辑器逻辑
-# ==========================================
 func _open_code_editor(p: Dictionary):
 	var win = Window.new()
 	win.title = "编辑 Python 代码 - " + p.name
 	win.size = Vector2(700, 500)
-	win.exclusive = true # 模态窗口，必须关掉才能点别处
-	
-	var vbox = VBoxContainer.new()
-	vbox.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
-	win.add_child(vbox)
-	
-	var text_edit = TextEdit.new()
-	text_edit.text = str(p.get("value", p.get("default", "")))
-	text_edit.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	text_edit.add_theme_font_size_override("font_size", 14)
-	# 开启代码语法高亮的常用设置
-	text_edit.syntax_highlighter = CodeHighlighter.new()
-	text_edit.draw_tabs = true
-	vbox.add_child(text_edit)
-	
-	var save_btn = Button.new()
-	save_btn.text = "💾 保存并关闭"
-	save_btn.custom_minimum_size.y = 40
-	save_btn.pressed.connect(func():
-		p["value"] = text_edit.text
-		win.queue_free()
-		parameter_changed.emit()
-	)
-	vbox.add_child(save_btn)
-	
-	win.close_requested.connect(func(): win.queue_free())
-	add_child(win)
-	win.popup_centered()
+	win.exclusive = true
+	var vbox = VBoxContainer.new(); vbox.set_anchors_and_offsets_preset(PRESET_FULL_RECT); win.add_child(vbox)
+	var text_edit = TextEdit.new(); text_edit.text = str(p.get("value", p.get("default", ""))); text_edit.size_flags_vertical = Control.SIZE_EXPAND_FILL; text_edit.add_theme_font_size_override("font_size", 14); text_edit.syntax_highlighter = CodeHighlighter.new(); text_edit.draw_tabs = true; vbox.add_child(text_edit)
+	var save_btn = Button.new(); save_btn.text = "💾 保存并关闭"; save_btn.custom_minimum_size.y = 40; save_btn.pressed.connect(func(): p["value"] = text_edit.text; win.queue_free(); parameter_changed.emit()); vbox.add_child(save_btn)
+	win.close_requested.connect(func(): win.queue_free()); add_child(win); win.popup_centered()

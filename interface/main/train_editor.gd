@@ -3,479 +3,213 @@ extends Control
 @onready var graph_edit = $GraphEdit
 @onready var action_menu = $ActionMenu 
 
-# 【修复】：去掉 @onready，改为普通变量，防止找不到节点报错
-var breadcrumb_bar: PanelContainer
-var breadcrumb_container: HBoxContainer
-
 const DynamicNodeScene = preload("res://torchnode/dynamic_torch_node.tscn") 
-
 var last_mouse_position: Vector2 = Vector2.ZERO
-# 【核心修复】：升级为阵列剪贴板，彻底告别 clipboard_config
 var clipboard_nodes: Array = [] 
-
-var search_popup: PopupPanel; var search_box: LineEdit; var node_tree: Tree
+var search_popup: PopupPanel
+var search_box: LineEdit
+var node_tree: Tree
 var shape_labels: Dictionary = {}
 
 func _ready():
 	set_anchors_and_offsets_preset(PRESET_FULL_RECT)
-	
-	_setup_breadcrumbs_ui()
 	_setup_search_menu()
 	_build_action_menu()
 	
 	graph_edit.panning_scheme = GraphEdit.SCROLL_ZOOMS
-	graph_edit.right_disconnects = true 
+	graph_edit.right_disconnects = true
 	graph_edit.connection_lines_thickness = 4 
-	graph_edit.connection_lines_antialiased = true 
 	
 	graph_edit.popup_request.connect(_on_graph_edit_popup_request)
-	graph_edit.delete_nodes_request.connect(_on_delete_nodes_request)
+	graph_edit.delete_nodes_request.connect(func(n): 
+		for nn in n: 
+			var nd = graph_edit.get_node(NodePath(nn))
+			if nd: _safe_delete_node(nd)
+	)
 	graph_edit.connection_request.connect(_on_connection_request)
 	graph_edit.disconnection_request.connect(_on_disconnection_request)
-	
-	GlobalData.library_updated.connect(func(): load_graph_state("main"))
-	if not GlobalData.node_library.is_empty():
-		load_graph_state(GlobalData.get_current_graph_id())
+	GlobalData.library_updated.connect(func(): load_graph_state())
+	if not GlobalData.node_library.is_empty(): 
+		load_graph_state()
 
 func _process(_delta):
 	for conn in graph_edit.get_connection_list():
-		var conn_key = str(conn["from_node"]) + "->" + str(conn["to_node"])
-		if shape_labels.has(conn_key):
-			var node_a = graph_edit.get_node(NodePath(str(conn["from_node"]))) as GraphNode
-			var node_b = graph_edit.get_node(NodePath(str(conn["to_node"]))) as GraphNode
-			if node_a and node_b:
-				var pos_a = node_a.position_offset + node_a.get_output_port_position(conn["from_port"])
-				var pos_b = node_b.position_offset + node_b.get_input_port_position(conn["to_port"])
-				var mid_local = ((pos_a + pos_b) / 2.0 * graph_edit.zoom) - graph_edit.scroll_offset
-				var lbl = shape_labels[conn_key] as Label
-				lbl.reset_size() 
-				lbl.position = mid_local - (lbl.size / 2.0)
+		var ck = str(conn["from_node"]) + "->" + str(conn["to_node"])
+		if shape_labels.has(ck):
+			var na = graph_edit.get_node(NodePath(str(conn["from_node"]))) as GraphNode
+			var nb = graph_edit.get_node(NodePath(str(conn["to_node"]))) as GraphNode
+			if na and nb:
+				var ml = ((na.position_offset + na.get_output_port_position(conn["from_port"]) + nb.position_offset + nb.get_input_port_position(conn["to_port"])) / 2.0 * graph_edit.zoom) - graph_edit.scroll_offset
+				var lbl = shape_labels[ck] as Label
+				lbl.reset_size()
+				lbl.position = ml - (lbl.size / 2.0)
 
-# ==========================================
-# 【全局快捷键监听】
-# ==========================================
-func _unhandled_input(event: InputEvent):
-	if event is InputEventKey and event.pressed and not event.is_echo():
-		# 防御：输入框打字时拦截快捷键
-		var focus_owner = get_viewport().gui_get_focus_owner()
-		if focus_owner is LineEdit or focus_owner is TextEdit: return 
-			
-		var is_cmd = event.ctrl_pressed or event.meta_pressed 
-		var sel = _get_selected_nodes()
-		
-		match event.keycode:
-			KEY_C: # 复制
-				if is_cmd and not sel.is_empty():
-					_copy_selected_nodes(sel)
-					get_viewport().set_input_as_handled()
-			KEY_X: # 剪切
-				if is_cmd and not sel.is_empty():
-					_copy_selected_nodes(sel)
-					for n in sel: _safe_delete_node(n)
-					get_viewport().set_input_as_handled()
-			KEY_V: # 粘贴
-				if is_cmd and not clipboard_nodes.is_empty():
-					_paste_nodes_from_clipboard()
-					get_viewport().set_input_as_handled()
-			KEY_A: # 全选
-				if is_cmd:
-					for n in graph_edit.get_children():
-						if n is GraphNode: n.selected = true
-					get_viewport().set_input_as_handled()
-			KEY_D: # 快速原位复制
-				if is_cmd and not sel.is_empty():
-					_copy_selected_nodes(sel)
-					_paste_nodes_from_clipboard(Vector2(20, 20)) 
-					get_viewport().set_input_as_handled()
-			KEY_DELETE, KEY_BACKSPACE: # 删除
-				if not sel.is_empty():
-					for n in sel: _safe_delete_node(n)
-					get_viewport().set_input_as_handled()
-
-# ==========================================
-# 【训练界面专属超能力】：将导入的 .bpnn 整个化身为一个 Group 节点
-# ==========================================
 func import_model_as_group(model_data: Dictionary, model_name: String):
-	var main_graph = model_data.get("main", {})
-	var nodes = main_graph.get("nodes", {})
-	var connections = main_graph.get("connections", [])
-	
-	if nodes.has("Data Input"):
-		nodes["input0"] = nodes["Data Input"].duplicate()
-		nodes.erase("Data Input")
-		for conn in connections:
-			if conn["from"] == "Data Input": conn["from"] = "input0"
-			if conn["to"] == "Data Input": conn["to"] = "input0"
-			
-	if nodes.has("Data Output"):
-		nodes["output0"] = nodes["Data Output"].duplicate()
-		nodes.erase("Data Output")
-		for conn in connections:
-			if conn["from"] == "Data Output": conn["from"] = "output0"
-			if conn["to"] == "Data Output": conn["to"] = "output0"
-	
-	var expected_input_count = 0
-	for nid in nodes:
-		if nodes[nid].get("type") == "Data Input":
-			expected_input_count += 1
-			
-	if expected_input_count == 0: expected_input_count = 1
-	
-	for graph_id in model_data.keys():
-		if graph_id == "main": GlobalData.project_graphs[model_name] = model_data[graph_id]
-		else: GlobalData.project_graphs[graph_id] = model_data[graph_id]
-			
-	var sys_cat = "Structure (架构)"
-	if GlobalData.node_library.has(sys_cat) and GlobalData.node_library[sys_cat].has("Group"):
-		var group_config = GlobalData.node_library[sys_cat]["Group"].duplicate(true)
-		for p in group_config.params:
-			if p.name == "input_count": p["value"] = expected_input_count
-				
-		var spawn_pos = (graph_edit.scroll_offset + Vector2(300, 200)) / graph_edit.zoom
-		var group_node = create_node_from_config(group_config, spawn_pos)
-		
-		group_node.name = model_name
-		group_node.title = "🧠 [模型] " + model_name
-		
-		_request_shape_inference()
+	pass # 扁平架构不再导入单独图表
 
-# ==========================================
-# 开放给 App 调用的公开接口 (API)
-# ==========================================
-func apply_shape_results(payload: Dictionary):
-	var shape_data = payload.get("shapes", {})
-	for conn_key in shape_data.keys():
-		if shape_labels.has(conn_key):
-			var lbl = shape_labels[conn_key] as Label
-			var result = str(shape_data[conn_key])
-			if result.length() > 60: result = result.substr(0, 57) + "..."
-			if "Error" in result or "冲突" in result or "错误" in result:
-				lbl.text = "✖ " + result; lbl.label_settings.font_color = Color(1, 0.3, 0.3)
-			else:
-				lbl.text = " " + result + " "; lbl.label_settings.font_color = Color(0.4, 1.0, 0.6)
-				
-	var updated_params = payload.get("updated_params", {})
-	for child in graph_edit.get_children():
-		if child is GraphNode and child.has_method("reset_auto_params"): child.reset_auto_params()
-	for node_name in updated_params.keys():
-		var node = graph_edit.get_node_or_null(NodePath(node_name))
-		if node and node is GraphNode and node.has_method("apply_auto_params"):
-			node.apply_auto_params(updated_params[node_name])
+func apply_shape_results(p: Dictionary):
+	for ck in p.get("shapes", {}).keys():
+		if shape_labels.has(ck):
+			var lbl = shape_labels[ck] as Label
+			var res = str(p["shapes"][ck])
+			if res.length() > 60: res = res.substr(0, 57) + "..."
+			if "Error" in res or "冲突" in res: 
+				lbl.text = "✖ " + res
+				lbl.label_settings.font_color = Color(1, 0.3, 0.3)
+			else: 
+				lbl.text = " " + res + " "
+				lbl.label_settings.font_color = Color(0.4, 1.0, 0.6)
 
 func save_current_graph_state():
-	var current_id = GlobalData.get_current_graph_id()
 	var data = {"nodes": {}, "connections": []}
-	for child in graph_edit.get_children():
-		if child is GraphNode and child.has_method("get_current_params"):
-			data["nodes"][child.name] = {
-				"type": child.config.name, "params": child.get_current_params(),
-				"inputs": child.config.get("inputs", []), "pos_x": child.position_offset.x, "pos_y": child.position_offset.y
+	for c in graph_edit.get_children():
+		if c is GraphNode and c.has_method("get_current_params"): 
+			data["nodes"][c.name] = {
+				"type": c.config.name, 
+				"params": c.get_current_params(), 
+				"inputs": c.config.get("inputs", []), 
+				"pos_x": c.position_offset.x, 
+				"pos_y": c.position_offset.y
 			}
-	for conn in graph_edit.get_connection_list():
-		data["connections"].append({"from": conn["from_node"], "from_port": conn["from_port"], "to": conn["to_node"], "to_port": conn["to_port"]})
-	GlobalData.project_graphs[current_id] = data
+	for conn in graph_edit.get_connection_list(): 
+		data["connections"].append({
+			"from": conn["from_node"], 
+			"from_port": conn["from_port"], 
+			"to": conn["to_node"], 
+			"to_port": conn["to_port"]
+		})
+	GlobalData.project_graphs["train"] = data
 
-func load_graph_state(graph_id: String, expected_input_count: int = 1):
+func load_graph_state():
 	graph_edit.clear_connections()
-	for child in graph_edit.get_children():
-		if child is GraphNode or child is Label: child.queue_free()
+	for c in graph_edit.get_children(): 
+		if c is GraphNode or c is Label: c.queue_free()
 	shape_labels.clear()
 	await get_tree().process_frame
 	
-	var data = GlobalData.project_graphs.get(graph_id, {})
-	var sys_cat = "System (系统节点)"
-	
+	var data = GlobalData.project_graphs.get("train", {})
 	if data.get("nodes", {}).is_empty():
-		if graph_id == "main":
-			var train_cat = "Training (训练配置)"
-			var sys_cat_ref = "System (系统节点)"
-			
-			if GlobalData.node_library.has(train_cat):
-				var n_data = create_node(train_cat, "Dataset Loader", Vector2(50, 100))
-				n_data.name = "Dataset_Loader"
-				var n_cfg = create_node(train_cat, "Training Config", Vector2(350, 100))
-				n_cfg.name = "Training_Config"
-				var n_target = create_node(train_cat, "Target Loader", Vector2(50, 350))
-				n_target.name = "Target_Loader"
-				var n_loss = create_node("Losses (损失函数)", "CrossEntropyLoss", Vector2(1000, 250))
-				n_loss.name = "CrossEntropyLoss"
-				var n_opt = create_node("Optimizers (优化器)", "Adam", Vector2(1350, 250))
-				n_opt.name = "Adam"
-				
-				var n_comment = create_node(sys_cat_ref, "Comment (注释)", Vector2(650, 80))
-				n_comment.name = "Workflow_Comment"
-				if n_comment.config.has("params"):
-					n_comment.config.params[0]["value"] = "【工作流说明】\n1. 请在上方点击 📦导入模型\n2. 将模型置于此处\n3. 连线: Config -> 模型 -> Loss (preds)"
-				
-				await get_tree().process_frame
-				_on_connection_request(n_data.name, 0, n_cfg.name, 0)      
-				_on_connection_request(n_target.name, 0, n_loss.name, 1)   
-				_on_connection_request(n_loss.name, 0, n_opt.name, 0)      
-				_request_shape_inference()
-		else:
-			for i in range(expected_input_count):
-				var in_name = "input" + str(i)
-				var in_n = create_node(sys_cat, "Data Input", Vector2(100, 200 + i * 150))
-				in_n.name = in_name; in_n.title = in_name
-			var out_n = create_node(sys_cat, "Data Output", Vector2(800, 200))
-			out_n.name = "output0"; out_n.title = "output0"
+		if GlobalData.node_library.has("Training (训练配置)"):
+			var d = create_node("Training (训练配置)", "Dataset Loader", Vector2(50, 100))
+			d.name = "Dataset"
+			var c = create_node("Training (训练配置)", "Training Config", Vector2(350, 100))
+			c.name = "Config"
+			var t = create_node("Training (训练配置)", "Target Loader", Vector2(50, 350))
+			t.name = "Target"
+			var l = create_node("Losses (损失函数)", "CrossEntropyLoss", Vector2(1000, 250))
+			l.name = "Loss"
+			var o = create_node("Optimizers (优化器)", "Adam", Vector2(1350, 250))
+			o.name = "Optimizer"
+			await get_tree().process_frame
+			_on_connection_request(d.name, 0, c.name, 0)
+			_on_connection_request(t.name, 0, l.name, 1)
+			_on_connection_request(l.name, 0, o.name, 0)
 	else:
-		for node_name in data["nodes"].keys():
-			var n_data = data["nodes"][node_name]
-			var cat = _find_category_by_type(n_data["type"])
-			if cat != "":
-				var conf = GlobalData.node_library[cat][n_data["type"]].duplicate(true)
-				if n_data.has("params") and conf.has("params"):
-					for p in conf.params:
-						if n_data["params"].has(p.name): p["value"] = n_data["params"][p.name]["value"]
-				var n = create_node_from_config(conf, Vector2(n_data.get("pos_x", 0), n_data.get("pos_y", 0)))
-				n.name = node_name
-				if node_name.begins_with("input") or node_name.begins_with("output"): n.title = node_name
-				
+		for nn in data["nodes"].keys():
+			var nd = data["nodes"][nn]
+			for cat in GlobalData.node_library.keys():
+				if GlobalData.node_library[cat].has(nd["type"]):
+					var conf = GlobalData.node_library[cat][nd["type"]].duplicate(true)
+					for p in conf.params: 
+						if nd.get("params", {}).has(p.name): p["value"] = nd["params"][p.name]["value"]
+					var n = _create_node(conf, Vector2(nd.get("pos_x", 0), nd.get("pos_y", 0)))
+					n.name = nn
+					break
 		await get_tree().process_frame
-		for c in data["connections"]:
+		for c in data["connections"]: 
 			_on_connection_request(c["from"], c["from_port"], c["to"], c["to_port"])
-			
-		if graph_id != "main":
-			for i in range(expected_input_count):
-				var in_name = "input" + str(i)
-				if not graph_edit.has_node(NodePath(in_name)):
-					var n = create_node(sys_cat, "Data Input", Vector2(100, 200 + i * 150))
-					n.name = in_name; n.title = in_name
-			for child in graph_edit.get_children():
-				if child is GraphNode and child.config.name == "Data Input" and child.name.begins_with("input"):
-					var idx_str = child.name.replace("input", "")
-					if idx_str.is_valid_int() and int(idx_str) >= expected_input_count:
-						_safe_delete_node(child)
-						
-	_refresh_breadcrumbs()
 	_request_shape_inference()
 
-# ==========================================
-# 内部连线与交互辅助函数
-# ==========================================
-func _get_selected_nodes() -> Array:
-	var selected = []
-	for n in graph_edit.get_children():
-		if n is GraphNode and n.selected: selected.append(n)
-	return selected
-
-func _copy_selected_nodes(nodes: Array):
-	clipboard_nodes.clear()
-	if nodes.is_empty(): return
-	var base_pos = nodes[0].position_offset
-	for n in nodes:
-		clipboard_nodes.append({
-			"config": n.config.duplicate(true),
-			"offset": n.position_offset - base_pos
-		})
-
-func _paste_nodes_from_clipboard(extra_offset: Vector2 = Vector2.ZERO):
-	if clipboard_nodes.is_empty(): return
-	for n in graph_edit.get_children():
-		if n is GraphNode: n.selected = false 
-	var mouse_pos = graph_edit.get_local_mouse_position()
-	var paste_base_pos = (mouse_pos + graph_edit.scroll_offset) / graph_edit.zoom + extra_offset
-	for item in clipboard_nodes:
-		var new_node = _create_node(item["config"].duplicate(true), paste_base_pos + item["offset"])
-		new_node.selected = true
-	_request_shape_inference()
-
-func _request_shape_inference():
+func _request_shape_inference(): 
 	save_current_graph_state()
-	if GlobalData.socket.get_ready_state() == WebSocketPeer.STATE_OPEN:
-		GlobalData.socket.send_text("INFER_SHAPES:" + JSON.stringify(GlobalData.project_graphs))
 
-func _on_connection_request(from_node: StringName, from_port: int, to_node: StringName, to_port: int):
-	for conn in graph_edit.get_connection_list():
-		if conn["from_node"] == from_node and conn["from_port"] == from_port and conn["to_node"] == to_node and conn["to_port"] == to_port: return 
-	for conn in graph_edit.get_connection_list():
-		if conn["to_node"] == to_node and conn["to_port"] == to_port:
+func _on_connection_request(fn: StringName, fp: int, tn: StringName, tp: int):
+	for conn in graph_edit.get_connection_list(): 
+		if conn["to_node"] == tn and conn["to_port"] == tp: 
 			graph_edit.disconnect_node(conn["from_node"], conn["from_port"], conn["to_node"], conn["to_port"])
-			var old_key = str(conn["from_node"]) + "->" + str(conn["to_node"])
-			if shape_labels.has(old_key): shape_labels[old_key].queue_free(); shape_labels.erase(old_key)
-			break 
-			
-	graph_edit.connect_node(from_node, from_port, to_node, to_port)
-	var conn_key = str(from_node) + "->" + str(to_node)
-	if not shape_labels.has(conn_key):
-		var lbl = Label.new(); lbl.text = " 计算中... "; lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		var settings = LabelSettings.new(); settings.font_size = 13; settings.font_color = Color(0.8, 0.8, 0.8)
-		lbl.label_settings = settings
-		var style = StyleBoxFlat.new(); style.bg_color = Color(0.1, 0.1, 0.15, 0.9); style.set_corner_radius_all(6)
-		style.content_margin_left = 8; style.content_margin_right = 8; style.content_margin_top = 4; style.content_margin_bottom = 4
-		style.border_width_left = 1; style.border_width_right = 1; style.border_width_top = 1; style.border_width_bottom = 1
-		style.border_color = Color(0.3, 0.3, 0.4)
-		lbl.add_theme_stylebox_override("normal", style) 
-		graph_edit.add_child(lbl)
-		shape_labels[conn_key] = lbl
-	_request_shape_inference()
+	graph_edit.connect_node(fn, fp, tn, tp)
 
-func _on_disconnection_request(from_node: StringName, from_port: int, to_node: StringName, to_port: int):
-	graph_edit.disconnect_node(from_node, from_port, to_node, to_port)
-	var conn_key = str(from_node) + "->" + str(to_node)
-	if shape_labels.has(conn_key):
-		shape_labels[conn_key].queue_free()
-		shape_labels.erase(conn_key)
-	_request_shape_inference()
+func _on_disconnection_request(fn: StringName, fp: int, tn: StringName, tp: int): 
+	graph_edit.disconnect_node(fn, fp, tn, tp)
+	
+func _create_node(c: Dictionary, p: Vector2) -> GraphNode:
+	var nn = DynamicNodeScene.instantiate()
+	graph_edit.add_child(nn)
+	nn.setup_node(c)
+	nn.position_offset = p
+	nn.gui_input.connect(_on_node_gui_input.bind(nn))
+	nn.parameter_changed.connect(_request_shape_inference)
+	return nn
+	
+func create_node(c, t, p): 
+	return _create_node(GlobalData.node_library[c][t].duplicate(true), p)
 
-func _find_category_by_type(node_type: String) -> String:
-	for cat in GlobalData.node_library.keys():
-		if GlobalData.node_library[cat].has(node_type): return cat
-	return ""
-
-func _create_node(config: Dictionary, pos: Vector2) -> GraphNode:
-	return create_node_from_config(config.duplicate(true), pos)
-
-func create_node(category, type, pos) -> GraphNode:
-	return create_node_from_config(GlobalData.node_library[category][type].duplicate(true), pos)
-
-func create_node_from_config(config: Dictionary, pos: Vector2) -> GraphNode:
-	var new_node = DynamicNodeScene.instantiate()
-	graph_edit.add_child(new_node)
-	new_node.setup_node(config)
-	new_node.position_offset = pos
-	new_node.gui_input.connect(_on_node_gui_input.bind(new_node))
-	new_node.parameter_changed.connect(_request_shape_inference)
-	if new_node.has_signal("enter_subgraph_requested"):
-		new_node.enter_subgraph_requested.connect(_on_enter_subgraph_requested)
-	return new_node
-
-func _setup_breadcrumbs_ui():
-	if not breadcrumb_bar:
-		breadcrumb_bar = PanelContainer.new()
-		var style = StyleBoxFlat.new(); style.bg_color = Color(0.1, 0.1, 0.1, 0.8)
-		breadcrumb_bar.add_theme_stylebox_override("panel", style)
-		breadcrumb_container = HBoxContainer.new()
-		breadcrumb_bar.add_child(breadcrumb_container)
-		add_child(breadcrumb_bar)
-		breadcrumb_bar.set_anchors_and_offsets_preset(PRESET_TOP_WIDE)
-		breadcrumb_bar.custom_minimum_size.y = 40
-	elif breadcrumb_bar.get_child_count() > 0:
-		breadcrumb_container = breadcrumb_bar.get_child(0)
-
-func _refresh_breadcrumbs():
-	for c in breadcrumb_container.get_children(): c.queue_free()
-	var path = GlobalData.current_path
-	for i in range(path.size()):
-		var btn = Button.new()
-		btn.text = "Train" if str(path[i]) == "main" else str(path[i])
-		btn.add_theme_font_size_override("font_size", 16)
-		btn.pressed.connect(func(): _go_to_breadcrumb_level(i))
-		breadcrumb_container.add_child(btn)
-		if i < path.size() - 1:
-			var sep = Label.new(); sep.text = "  >>  "
-			breadcrumb_container.add_child(sep)
-
-func _on_enter_subgraph_requested(node_name: String):
-	var node = graph_edit.get_node_or_null(NodePath(node_name))
-	var expected_count = 1
-	if node:
-		var params = node.get_current_params()
-		if params.has("input_count"): expected_count = int(float(params["input_count"]["value"]))
-		
-	save_current_graph_state()
-	GlobalData.current_path.append(node_name)
-	load_graph_state(node_name, expected_count)
-
-func _go_to_breadcrumb_level(level_index: int):
-	if level_index == GlobalData.current_path.size() - 1: return
-	save_current_graph_state()
-	GlobalData.current_path = GlobalData.current_path.slice(0, level_index + 1)
-	load_graph_state(GlobalData.get_current_graph_id())
-
-func _build_action_menu():
+func _build_action_menu(): 
 	action_menu.clear()
-	action_menu.add_item("复制 (Copy)", 0); action_menu.add_item("剪切 (Cut)", 1); action_menu.add_separator(); action_menu.add_item("删除 (Delete)", 2)
-	action_menu.id_pressed.connect(_on_action_menu_id_pressed)
-
-func _on_node_gui_input(event: InputEvent, node: GraphNode):
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
-		if not node.selected:
-			for n in graph_edit.get_children():
-				if n is GraphNode: n.selected = (n == node)
-		action_menu.position = get_viewport().get_mouse_position(); action_menu.popup()
-		node.accept_event()
-
-func _on_action_menu_id_pressed(id: int):
-	var sel = _get_selected_nodes()
-	if sel.is_empty(): return
-	match id:
-		0: _copy_selected_nodes(sel)
-		1: _copy_selected_nodes(sel); for n in sel: _safe_delete_node(n)
-		2: for n in sel: _safe_delete_node(n)
-
-func _safe_delete_node(node: GraphNode):
-	var node_name = node.name
-	for conn in graph_edit.get_connection_list():
-		if conn["from_node"] == node_name or conn["to_node"] == node_name:
-			_on_disconnection_request(conn["from_node"], conn["from_port"], conn["to_node"], conn["to_port"])
+	action_menu.add_item("删除", 2)
+	action_menu.id_pressed.connect(func(id): 
+		for n in graph_edit.get_children(): 
+			if n is GraphNode and n.selected: _safe_delete_node(n)
+	)
+	
+func _on_node_gui_input(e, n): 
+	if e is InputEventMouseButton and e.button_index == MOUSE_BUTTON_RIGHT and e.pressed: 
+		action_menu.position = get_viewport().get_mouse_position()
+		action_menu.popup()
+		n.accept_event()
+		
+func _safe_delete_node(node: GraphNode): 
+	var nn = node.name
+	for c in graph_edit.get_connection_list(): 
+		if c["from_node"] == nn or c["to_node"] == nn: 
+			_on_disconnection_request(c["from_node"], c["from_port"], c["to_node"], c["to_port"])
 	node.queue_free()
 
-func _on_delete_nodes_request(nodes: Array[StringName]):
-	for node_name in nodes:
-		var node = graph_edit.get_node(NodePath(node_name))
-		if node: _safe_delete_node(node)
-
-func _setup_search_menu():
+func _setup_search_menu(): 
 	search_popup = PopupPanel.new()
-	var vbox = VBoxContainer.new()
-	search_box = LineEdit.new(); search_box.placeholder_text = "搜索 PyTorch 节点..."
-	search_box.text_changed.connect(_on_search_text_changed)
-	vbox.add_child(search_box)
-	node_tree = Tree.new(); node_tree.custom_minimum_size = Vector2(320, 450); node_tree.hide_root = true 
-	node_tree.item_selected.connect(_on_tree_item_chosen)
-	node_tree.item_activated.connect(_on_tree_item_chosen) 
-	vbox.add_child(node_tree); search_popup.add_child(vbox); add_child(search_popup) 
-
-func _on_graph_edit_popup_request(pos: Vector2):
+	var v = VBoxContainer.new()
+	search_box = LineEdit.new()
+	search_box.text_changed.connect(_populate_tree)
+	v.add_child(search_box)
+	node_tree = Tree.new()
+	node_tree.hide_root = true
+	node_tree.item_activated.connect(_on_tree_item_chosen)
+	v.add_child(node_tree)
+	search_popup.add_child(v)
+	add_child(search_popup) 
+	
+func _on_graph_edit_popup_request(pos): 
 	last_mouse_position = (pos + graph_edit.scroll_offset) / graph_edit.zoom
-	_populate_tree("") 
-	search_popup.position = get_viewport().get_mouse_position(); search_popup.popup()
-	search_box.clear(); search_box.grab_focus() 
-
-func _populate_tree(filter_text: String):
+	_populate_tree("")
+	search_popup.position = get_viewport().get_mouse_position()
+	search_popup.popup()
+	search_box.clear()
+	search_box.grab_focus() 
+	
+func _populate_tree(ft: String): 
 	node_tree.clear()
 	var root = node_tree.create_item()
-	if filter_text == "" and not clipboard_nodes.is_empty():
-		var paste_item = node_tree.create_item(root)
-		paste_item.set_text(0, "📋 粘贴 " + str(clipboard_nodes.size()) + " 个节点") 
-		paste_item.set_metadata(0, {"is_paste": true})
-		paste_item.set_custom_color(0, Color(1, 0.8, 0.2))
-		
-	filter_text = filter_text.to_lower()
-	for category in GlobalData.node_library.keys():
-		var cat_item = node_tree.create_item(root)
-		cat_item.set_text(0, category)
-		cat_item.set_selectable(0, false)
-		cat_item.set_custom_bg_color(0, Color(0.15, 0.15, 0.15))
-		var has_visible_children = false
-		for node_name in GlobalData.node_library[category].keys():
-			if filter_text == "" or filter_text in node_name.to_lower() or filter_text in category.to_lower():
-				var item = node_tree.create_item(cat_item)
-				item.set_text(0, node_name)
-				item.set_metadata(0, {"category": category, "name": node_name})
-				item.set_tooltip_text(0, "[ " + node_name + " ]\n" + GlobalData.node_library[category][node_name].get("description", "暂无说明文档"))
-				has_visible_children = true
-		if not has_visible_children: 
-			cat_item.free()
-		else:
-			cat_item.collapsed = (filter_text == "")
-
-func _on_search_text_changed(new_text: String): _populate_tree(new_text)
-
-func _on_tree_item_chosen():
-	var selected_item = node_tree.get_selected()
-	if not selected_item: return
-	var meta = selected_item.get_metadata(0)
-	if meta == null: return
-	
-	if meta.has("is_paste"): 
-		var safe_mouse_pos = (last_mouse_position * graph_edit.zoom) - graph_edit.scroll_offset
-		graph_edit.warp_mouse(safe_mouse_pos)
-		_paste_nodes_from_clipboard()
-	else: 
-		_create_node(GlobalData.node_library[meta["category"]][meta["name"]], last_mouse_position)
-		
-	selected_item.deselect(0)
-	search_popup.hide()
+	ft = ft.to_lower()
+	for cat in GlobalData.node_library.keys(): 
+		var ci = node_tree.create_item(root)
+		ci.set_text(0, cat)
+		var vis = false
+		for nn in GlobalData.node_library[cat].keys(): 
+			if ft == "" or ft in nn.to_lower() or ft in cat.to_lower(): 
+				var i = node_tree.create_item(ci)
+				i.set_text(0, nn)
+				i.set_metadata(0, {"c": cat, "n": nn})
+				vis = true
+		if not vis: 
+			ci.free()
+		else: 
+			if ft == "":
+				ci.collapsed = true
+			else:
+				ci.collapsed = false
+				
+func _on_tree_item_chosen(): 
+	var s = node_tree.get_selected()
+	if s and s.get_metadata(0): 
+		_create_node(GlobalData.node_library[s.get_metadata(0)["c"]][s.get_metadata(0)["n"]], last_mouse_position)
+		search_popup.hide()
