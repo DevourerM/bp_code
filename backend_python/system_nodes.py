@@ -5,15 +5,14 @@ SYSTEM_NODES = {
         "Def Function": {
             "name": "Def Function", "inputs": [], "main_out": "def",
             "params": [{"name": "func_name", "type": "string", "default": "main"}],
-            "description": "函数起点。将其连接到多个 Data Input 以定义多输入函数。命名为 main 则为主网络。"
+            "description": "函数定义起点。将其连接到多个 Data Input 以绑定函数入参。"
         },
         "Return Function": {
             "name": "Return Function", "inputs": [], "main_out": "",
             "params": [
-                {"name": "func_name", "type": "string", "default": "main"},
                 {"name": "input_count", "type": "int", "default": 1}
             ],
-            "description": "函数终点。动态调整 input_count 以接收无数个输出。"
+            "description": "函数终点。将最终的计算结果连接至此。不需要命名，系统会自动溯源。"
         },
         "Data Input": {
             "name": "Data Input", "inputs": ["def"], "main_out": "tensor",
@@ -21,7 +20,7 @@ SYSTEM_NODES = {
                 {"name": "arg_name", "type": "string", "default": "x"},
                 {"name": "shape", "type": "tuple", "default": "(1, 3, 224, 224)"}
             ],
-            "description": "函数的输入参数。连在 Def Function 后进行参数绑定。"
+            "description": "函数的输入参数。必须连接在 Def Function 后面。自带期望形状仅作独立开发时的预览参照。"
         },
         "Call Function": {
             "name": "Call Function", "inputs": [], "main_out": "",
@@ -30,7 +29,7 @@ SYSTEM_NODES = {
                 {"name": "input_count", "type": "int", "default": 1},
                 {"name": "output_count", "type": "int", "default": 1}
             ],
-            "description": "调用你在画布上定义的其他函数模块。它会自动应用该模块计算出的尺寸。"
+            "description": "调用在画布上定义的其他模块。它会自动将输入尺寸代入目标模块进行递归推导。"
         },
         "Loop Begin": {
             "name": "Loop Begin", "inputs": ["tensor"], "main_out": "tensor",

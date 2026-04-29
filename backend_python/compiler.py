@@ -22,8 +22,34 @@ def format_param(val_str, p_type):
 
 def clean_name(name): return re.sub(r'\W|^(?=\d)', '_', name)
 
+# WCC 孤岛拆分器
+def get_blocks(nodes, connections):
+    adj = {n: [] for n in nodes}
+    for c in connections:
+        if c["from"] in nodes and c["to"] in nodes:
+            adj[c["from"]].append(c["to"])
+            adj[c["to"]].append(c["from"])
+            
+    visited = set()
+    blocks = {}
+    for nid, info in nodes.items():
+        if info.get("type") == "Def Function":
+            b_name = info.get("params", {}).get("func_name", {}).get("value", "main")
+            comp = set()
+            q = [nid]
+            visited.add(nid)
+            while q:
+                curr = q.pop(0)
+                comp.add(curr)
+                for neighbor in adj[curr]:
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        q.append(neighbor)
+            blocks[b_name] = comp
+    return blocks
+
 # ==========================================
-# 核心编译引擎 (V4.1 函数绑定解包版)
+# 核心编译引擎 (V6.0 完美多态分离类生成)
 # ==========================================
 def generate_pytorch_code(project_data, main_class_name="MyNetwork"):
     nodes = project_data.get("main", {}).get("nodes", {})
@@ -37,51 +63,7 @@ def generate_pytorch_code(project_data, main_class_name="MyNetwork"):
         type_counters[base_name] = type_counters.get(base_name, 0) + 1
         node_var_map[nid] = f"{base_name}_{type_counters[base_name]}"
 
-    # 【核心】：根据 Def Function -> Data Input 连线提取函数参数
-    func_blocks = {} # fname: { inputs: [nid], return: nid }
-    for nid, info in nodes.items():
-        if info["type"] == "Def Function":
-            fname = info["params"]["func_name"]["value"]
-            if fname not in func_blocks: func_blocks[fname] = {"inputs": [], "return": None}
-            # 找到连接到这个 Def 的所有 Data Input
-            for conn in connections:
-                if conn["from"] == nid and nodes.get(conn["to"], {}).get("type") == "Data Input":
-                    func_blocks[fname]["inputs"].append(conn["to"])
-        elif info["type"] == "Return Function":
-            fname = info["params"]["func_name"]["value"]
-            if fname not in func_blocks: func_blocks[fname] = {"inputs": [], "return": None}
-            func_blocks[fname]["return"] = nid
-
-    adj_list = {nid: [] for nid in nodes}
-    for conn in connections: adj_list[conn["from"]].append(conn)
-
-    def get_subgraph_topo(start_nids):
-        reachable = set(); q = list(start_nids)
-        while q:
-            curr = q.pop(0)
-            if curr not in reachable:
-                reachable.add(curr)
-                for c in adj_list[curr]:
-                    if nodes.get(c["from"], {}).get("type") not in ["Weight Init", "Comment", "Def Function"]:
-                        q.append(c["to"])
-        sub_in_deg = {n: 0 for n in reachable}
-        for n in reachable:
-            for c in adj_list[n]:
-                if c["to"] in reachable and nodes.get(c["from"], {}).get("type") not in ["Weight Init", "Comment", "Def Function"]:
-                    sub_in_deg[c["to"]] += 1
-        sq = [n for n in reachable if sub_in_deg[n] == 0]
-        topo = []
-        while sq:
-            curr = sq.pop(0); topo.append(curr)
-            for c in adj_list[curr]:
-                if c["to"] in reachable and nodes.get(c["from"], {}).get("type") not in ["Weight Init", "Comment", "Def Function"]:
-                    sub_in_deg[c["to"]] -= 1
-                    if sub_in_deg[c["to"]] == 0: sq.append(c["to"])
-        return topo
-
-    methods_code = []
-    global_init_lines = []
-    looped_nodes = set()
+    blocks = get_blocks(nodes, connections)
     
     init_methods = {}
     for nid, info in nodes.items():
@@ -91,30 +73,48 @@ def generate_pytorch_code(project_data, main_class_name="MyNetwork"):
 
     layer_inits = {conn["to"]: init_methods[conn["from"]] for conn in connections if conn["from"] in init_methods}
     
-    import torch.nn as nn
-
-    # 先生成所有独立的函数 (保证 main 函数在最后)
-    block_names = list(func_blocks.keys())
+    # 强制将主模型类放最后
+    block_names = list(blocks.keys())
     if "main" in block_names: 
         block_names.remove("main")
-        block_names.append("main") # 把 main 放最后编译
+        block_names.append("main")
 
+    import torch.nn as nn
+    generated_classes_code = []
+
+    # 为每一个物理区块生成独立的 nn.Module
     for fname in block_names:
-        block = func_blocks[fname]
-        start_nids = block["inputs"]
-        if not start_nids: continue # 没有任何输入则不编译此函数
-            
-        topo = get_subgraph_topo(start_nids)
+        comp_nodes = blocks[fname]
+        cname = main_class_name if fname == "main" else fname
         
-        # 参数按照 Y 坐标或者名字排序，保证函数签名稳定
+        start_nids = [n for n in comp_nodes if nodes[n]["type"] == "Data Input"]
+        if not start_nids: continue 
+            
         start_nids.sort(key=lambda x: nodes[x]["params"].get("arg_name", {}).get("value", "x"))
         arg_names = [nodes[x]["params"].get("arg_name", {}).get("value", "x") for x in start_nids]
         
-        def_line = f"    def forward(self, {', '.join(arg_names)}):" if fname == "main" else f"    def {fname}(self, {', '.join(arg_names)}):"
-        lines = []
+        in_deg = {n: 0 for n in comp_nodes}
+        dir_adj = {n: [] for n in comp_nodes}
+        for c in connections:
+            fn, tn = c["from"], c["to"]
+            if fn in comp_nodes and tn in comp_nodes and nodes.get(fn, {}).get("type") not in ["Weight Init", "Comment", "Def Function"]:
+                dir_adj[fn].append(tn)
+                in_deg[tn] += 1
+        q = [n for n in comp_nodes if in_deg[n] == 0]
+        topo = []
+        while q:
+            curr = q.pop(0); topo.append(curr)
+            for nbr in dir_adj[curr]:
+                in_deg[nbr] -= 1
+                if in_deg[nbr] == 0: q.append(nbr)
+        
+        init_lines = []
+        forward_lines = []
+        weight_init_lines = []
         indent = "        "
         out_vars = {n: {} for n in topo}
         loop_stack = []
+        looped_nodes = set()
 
         for nid in topo:
             info = nodes[nid]
@@ -129,31 +129,40 @@ def generate_pytorch_code(project_data, main_class_name="MyNetwork"):
 
             if ntype == "Data Input":
                 arg_name = info.get("params", {}).get("arg_name", {}).get("value", "x")
-                lines.append(f"{indent}{var_name} = {arg_name}")
+                forward_lines.append(f"{indent}{var_name} = {arg_name}")
                 out_vars[nid][0] = var_name
                 
             elif ntype == "Return Function":
                 ret_vars = [in_args[i] for i in range(len(in_args)) if in_args[i] is not None]
-                lines.append(f"{indent}return {', '.join(ret_vars) if ret_vars else 'None'}")
+                forward_lines.append(f"{indent}return {', '.join(ret_vars) if ret_vars else 'None'}")
                 
             elif ntype == "Call Function":
                 c_b_name = info["params"].get("func_name", {}).get("value", "my_func")
                 out_cnt = int(float(info["params"].get("output_count", {}).get("value", 1)))
+                fn_name = f"fn_Call_{node_var_map[nid]}"
+                
+                if loop_stack:
+                    loop_name, iters = loop_stack[-1]
+                    init_lines.append(f"        self.{fn_name} = nn.ModuleList([{c_b_name}() for _ in range({iters})])")
+                    call_str = f"self.{fn_name}[idx_{loop_name}]({', '.join(in_args)})"
+                else:
+                    init_lines.append(f"        self.{fn_name} = {c_b_name}()")
+                    call_str = f"self.{fn_name}({', '.join(in_args)})"
                 
                 if out_cnt > 1:
                     ret_names = [f"{var_name}_{i}" for i in range(out_cnt)]
-                    lines.append(f"{indent}{', '.join(ret_names)} = self.{c_b_name}({', '.join(in_args)})")
+                    forward_lines.append(f"{indent}{', '.join(ret_names)} = {call_str}")
                     for i in range(out_cnt): out_vars[nid][i] = ret_names[i]
                 else:
-                    lines.append(f"{indent}{var_name} = self.{c_b_name}({', '.join(in_args)})")
+                    forward_lines.append(f"{indent}{var_name} = {call_str}")
                     out_vars[nid][0] = var_name
                 
             elif ntype == "Loop Begin":
                 iters = int(float(info["params"].get("iterations", {}).get("value", 3)))
                 loop_name = node_var_map[nid]
                 loop_var = f"v_loop_{loop_name}"
-                lines.append(f"{indent}{loop_var} = {in_args[0] if in_args else 'None'}")
-                lines.append(f"{indent}for idx_{loop_name} in range({iters}):")
+                forward_lines.append(f"{indent}{loop_var} = {in_args[0] if in_args else 'None'}")
+                forward_lines.append(f"{indent}for idx_{loop_name} in range({iters}):")
                 indent += "    "
                 out_vars[nid][0] = loop_var
                 loop_stack.append((loop_name, iters))
@@ -162,7 +171,7 @@ def generate_pytorch_code(project_data, main_class_name="MyNetwork"):
                 if loop_stack:
                     curr_loop_name, _ = loop_stack.pop()
                     curr_loop_var = f"v_loop_{curr_loop_name}"
-                    lines.append(f"{indent}{curr_loop_var} = {in_args[0] if in_args else 'None'}")
+                    forward_lines.append(f"{indent}{curr_loop_var} = {in_args[0] if in_args else 'None'}")
                     indent = indent[:-4]
                     out_vars[nid][0] = curr_loop_var
                     
@@ -171,52 +180,53 @@ def generate_pytorch_code(project_data, main_class_name="MyNetwork"):
                 fn_name = f"fn_{node_var_map[nid]}"
                 if loop_stack:
                     loop_name, iters = loop_stack[-1]
-                    global_init_lines.append(f"        self.{fn_name} = nn.ModuleList([nn.{ntype}({', '.join(args)}) for _ in range({iters})])")
-                    lines.append(f"{indent}{var_name} = self.{fn_name}[idx_{loop_name}]({', '.join(in_args)})")
+                    init_lines.append(f"        self.{fn_name} = nn.ModuleList([nn.{ntype}({', '.join(args)}) for _ in range({iters})])")
+                    forward_lines.append(f"{indent}{var_name} = self.{fn_name}[idx_{loop_name}]({', '.join(in_args)})")
                     looped_nodes.add(nid)
                 else:
-                    global_init_lines.append(f"        self.{fn_name} = nn.{ntype}({', '.join(args)})")
-                    lines.append(f"{indent}{var_name} = self.{fn_name}({', '.join(in_args)})")
+                    init_lines.append(f"        self.{fn_name} = nn.{ntype}({', '.join(args)})")
+                    forward_lines.append(f"{indent}{var_name} = self.{fn_name}({', '.join(in_args)})")
                 out_vars[nid][0] = var_name
                 
-            elif ntype == "Reshape": lines.append(f"{indent}{var_name} = {in_args[0]}.view({info['params'].get('shape', {}).get('value', '(1, -1)')})"); out_vars[nid][0] = var_name
-            elif ntype == "Concat": lines.append(f"{indent}{var_name} = torch.cat([{', '.join(in_args)}], dim={int(float(info['params'].get('dim', {}).get('value', '-1')))})"); out_vars[nid][0] = var_name
+            elif ntype == "Reshape": forward_lines.append(f"{indent}{var_name} = {in_args[0]}.view({info['params'].get('shape', {}).get('value', '(1, -1)')})"); out_vars[nid][0] = var_name
+            elif ntype == "Concat": forward_lines.append(f"{indent}{var_name} = torch.cat([{', '.join(in_args)}], dim={int(float(info['params'].get('dim', {}).get('value', '-1')))})"); out_vars[nid][0] = var_name
             elif ntype == "Binary Math":
                 op = info["params"].get("op", {}).get("value", "add")
                 a, b = in_args[0] if len(in_args)>0 else "None", in_args[1] if len(in_args)>1 else "None"
-                if "add" in op: lines.append(f"{indent}{var_name} = {a} + {b}")
-                elif "sub" in op: lines.append(f"{indent}{var_name} = {a} - {b}")
-                elif "mul" in op: lines.append(f"{indent}{var_name} = {a} * {b}")
-                elif "matmul" in op: lines.append(f"{indent}{var_name} = torch.matmul({a}, {b})")
+                if "add" in op: forward_lines.append(f"{indent}{var_name} = {a} + {b}")
+                elif "sub" in op: forward_lines.append(f"{indent}{var_name} = {a} - {b}")
+                elif "mul" in op: forward_lines.append(f"{indent}{var_name} = {a} * {b}")
+                elif "matmul" in op: forward_lines.append(f"{indent}{var_name} = torch.matmul({a}, {b})")
                 out_vars[nid][0] = var_name
 
-        methods_code.append(def_line + "\n" + "\n".join(lines))
+        for target_nid, cfg in layer_inits.items():
+            if target_nid in comp_nodes and target_nid in node_var_map:
+                fn_name = f"fn_{node_var_map[target_nid]}"
+                if target_nid in looped_nodes:
+                    weight_init_lines.append(f"        for layer in self.{fn_name}:")
+                    if cfg["method"] == "normal_": weight_init_lines.append(f"            nn.init.normal_(layer.weight, mean={cfg['mean']}, std={cfg['std']})")
+                    else: weight_init_lines.append(f"            nn.init.{cfg['method']}(layer.weight)")
+                    weight_init_lines.append(f"            if getattr(layer, 'bias', None) is not None:\n                nn.init.zeros_(layer.bias)")
+                else:
+                    if cfg["method"] == "normal_": weight_init_lines.append(f"        nn.init.normal_(self.{fn_name}.weight, mean={cfg['mean']}, std={cfg['std']})")
+                    else: weight_init_lines.append(f"        nn.init.{cfg['method']}(self.{fn_name}.weight)")
+                    weight_init_lines.append(f"        if getattr(self.{fn_name}, 'bias', None) is not None:\n            nn.init.zeros_(self.{fn_name}.bias)")
 
-    code = f"import torch\nimport torch.nn as nn\n\nclass {main_class_name}(nn.Module):\n    def __init__(self):\n        super({main_class_name}, self).__init__()\n"
-    code += "\n".join(global_init_lines) + "\n" if global_init_lines else "        pass\n"
-    
-    init_weight_lines = []
-    for target_nid, cfg in layer_inits.items():
-        if target_nid in node_var_map:
-            fn_name = f"fn_{node_var_map[target_nid]}"
-            if target_nid in looped_nodes:
-                init_weight_lines.append(f"        for layer in self.{fn_name}:")
-                if cfg["method"] == "normal_": init_weight_lines.append(f"            nn.init.normal_(layer.weight, mean={cfg['mean']}, std={cfg['std']})")
-                else: init_weight_lines.append(f"            nn.init.{cfg['method']}(layer.weight)")
-                init_weight_lines.append(f"            if getattr(layer, 'bias', None) is not None:\n                nn.init.zeros_(layer.bias)")
-            else:
-                if cfg["method"] == "normal_": init_weight_lines.append(f"        nn.init.normal_(self.{fn_name}.weight, mean={cfg['mean']}, std={cfg['std']})")
-                else: init_weight_lines.append(f"        nn.init.{cfg['method']}(self.{fn_name}.weight)")
-                init_weight_lines.append(f"        if getattr(self.{fn_name}, 'bias', None) is not None:\n            nn.init.zeros_(self.{fn_name}.bias)")
+        class_str = f"class {cname}(nn.Module):\n"
+        class_str += "    def __init__(self):\n"
+        class_str += f"        super({cname}, self).__init__()\n"
+        class_str += "\n".join(init_lines) + "\n" if init_lines else "        pass\n"
+        if weight_init_lines: class_str += "\n        self._initialize_weights()\n"
+        
+        class_str += f"\n    def forward(self, {', '.join(arg_names)}):\n"
+        class_str += "\n".join(forward_lines) + "\n"
+        
+        if weight_init_lines:
+            class_str += "\n    def _initialize_weights(self):\n" + "\n".join(weight_init_lines) + "\n"
+            
+        generated_classes_code.append(class_str)
 
-    if init_weight_lines: code += "\n        self._initialize_weights()\n"
-    code += "\n"
-    code += "\n\n".join(methods_code) + "\n"
-    
-    if init_weight_lines:
-        code += "\n    def _initialize_weights(self):\n" + "\n".join(init_weight_lines) + "\n"
-    return code
-
+    return "import torch\nimport torch.nn as nn\n\n" + "\n\n".join(generated_classes_code)
 
 def generate_train_code(project_data, main_class_name="MyNetwork"):
     nodes = project_data.get("main", {}).get("nodes", {})
@@ -224,7 +234,7 @@ def generate_train_code(project_data, main_class_name="MyNetwork"):
     for nid, info in nodes.items():
         lt = info.get("type", "")
         if "Loss" in lt: loss_node = info
-        elif lt in ["Adadelta", "Adagrad", "Adam", "AdamW", "SGD"]: optim_node = info
+        elif lt in ["Adadelta", "Adagrad", "Adam", "AdamW", "SGD", "RMSprop"]: optim_node = info
         elif lt == "Dataset Loader": dataset_node = info
         elif lt == "Target Loader": target_node = info
         elif lt == "Training Config": config_node = info
@@ -280,4 +290,7 @@ class {main_class_name}Inference:
     def generate(self, *args):
         inputs = [arg.to(self.device) for arg in args if isinstance(arg, torch.Tensor)]
         return self.model(*inputs)
+if __name__ == '__main__':
+    api = {main_class_name}Inference()
+    print("Test instantiated successfully.")
 """

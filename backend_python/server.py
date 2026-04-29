@@ -2,8 +2,13 @@ import os
 import sys
 
 # ==========================================
-# 【环境补丁】针对 PyInstaller 打包环境的 DLL 加载修复
+# 【绝对防御】：强制把当前目录加入环境变量，必须放在文件最开头！
 # ==========================================
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+if CURRENT_DIR not in sys.path:
+    sys.path.insert(0, CURRENT_DIR)
+
+# 针对 PyInstaller 的运行环境修复 (兼容未来可能的需求)
 if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
     os.environ['PATH'] = sys._MEIPASS + os.pathsep + os.environ['PATH']
     try:
@@ -20,12 +25,14 @@ import json
 import inspect
 import torch.nn as nn
 import torch.optim as optim
+
+# ==========================================
+# 【核心修正】：本地模块导入必须放在 sys.path 修改之后！
+# ==========================================
 from shape_engine import infer_graph_shapes
 from system_nodes import SYSTEM_NODES
 
-# ==========================================
-# 核心功能：扫描 PyTorch 库并生成动态节点字典
-# ==========================================
+
 def generate_torch_library():
     print("正在扫描 PyTorch 库...")
     library = SYSTEM_NODES.copy()
@@ -46,7 +53,6 @@ def generate_torch_library():
             elif name in ["ReLU", "Sigmoid", "Tanh", "LeakyReLU", "Softmax", "GELU"]: category = "Activations (激活函数)"
             elif "Loss" in name: category = "Losses (损失函数)"
 
-            # 获取官方文档作为节点描述
             doc_string = inspect.getdoc(obj)
             short_doc = "暂无说明文档"
             if doc_string:
@@ -67,7 +73,6 @@ def generate_torch_library():
                     params.append({"name": p_name, "type": p_type, "default": p_default})
             except ValueError: pass
 
-            # 【核心逻辑】：如果是带有权重的层(Conv/Linear)，为其增加 init 连线端口
             is_loss = (category == "Losses (损失函数)")
             is_trainable_layer = category in ["Convolutions (卷积层)", "Linear (全连接层)"]
             
@@ -108,7 +113,6 @@ def generate_torch_library():
                 "description": "PyTorch 优化器"
             }
 
-    # 剔除空分类并返回
     return {k: v for k, v in library.items() if v}
 
 TORCH_NODE_LIBRARY = generate_torch_library()
@@ -121,17 +125,14 @@ async def handle_client(websocket):
     try:
         async for message in websocket:
             
-            # 1. 发送节点库数据
             if message == "REQUEST_NODES":
                 await websocket.send(json.dumps({"type": "LIBRARY", "data": TORCH_NODE_LIBRARY}))
                 
-            # 2. 实时推导张量形状
             elif message.startswith("INFER_SHAPES:"):
                 graph_json_str = message.replace("INFER_SHAPES:", "")
                 shape_results = infer_graph_shapes(json.loads(graph_json_str))
                 await websocket.send(json.dumps({"type": "SHAPE_RESULTS", "data": shape_results}))
                 
-            # 3. 导出模型专属代码 (.py) 
             elif message.startswith("EXPORT_PY:"):
                 req = json.loads(message.replace("EXPORT_PY:", ""))
                 try:
@@ -143,7 +144,6 @@ async def handle_client(websocket):
                 except Exception as e:
                     await websocket.send(json.dumps({"type": "EXPORT_ERROR", "msg": str(e)}))
                     
-            # 4. 导出训练闭环脚本代码 (train.py) 
             elif message.startswith("EXPORT_TRAIN_PY:"):
                 req = json.loads(message.replace("EXPORT_TRAIN_PY:", ""))
                 try:
@@ -155,7 +155,6 @@ async def handle_client(websocket):
                 except Exception as e:
                     await websocket.send(json.dumps({"type": "EXPORT_ERROR", "msg": str(e)}))
                     
-            # 5. 导出推理部署封装类 (test.py) 
             elif message.startswith("EXPORT_TEST_PY:"):
                 req = json.loads(message.replace("EXPORT_TEST_PY:", ""))
                 try:
